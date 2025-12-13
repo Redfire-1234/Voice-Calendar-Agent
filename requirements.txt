@@ -12,3 +12,4 @@ python-dateutil
 
 # Optional: For securely loading the GROQ_API_KEY from a .env file
 python-dotenv
+itsdangerous
