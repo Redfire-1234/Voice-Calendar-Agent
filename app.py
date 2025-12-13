@@ -188,6 +188,8 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
 
 # ------------------ LLM CHAT ------------------
 
+import re
+
 def chat_fn(message, history, request: gr.Request):
     user_id = request.session.get("user_id")
 
@@ -196,15 +198,46 @@ def chat_fn(message, history, request: gr.Request):
             {"role": "assistant", "content": "🔐 Please connect your Google Calendar first.\n\n👉 Click **Login with Google**."}
         ], ""
 
+    history.append({"role": "user", "content": message})
+
+    # ---- SIMPLE INTENT DETECTION ----
+    schedule_keywords = ["schedule", "book", "create meeting", "set meeting"]
+
+    if any(k in message.lower() for k in schedule_keywords):
+        try:
+            # VERY BASIC PARSING (can improve later)
+            name_match = re.search(r"with (\w+)", message.lower())
+            name = name_match.group(1).capitalize() if name_match else "Guest"
+
+            date = "tomorrow" if "tomorrow" in message.lower() else "today"
+
+            time_match = re.search(r"(\d{1,2}(:\d{2})?\s?(am|pm))", message.lower())
+            time = time_match.group(1) if time_match else "10 AM"
+
+            result = create_calendar_event(
+                user_id=user_id,
+                name=name,
+                date_str=date,
+                time_str=time
+            )
+
+            history.append({"role": "assistant", "content": result})
+            return history, ""
+
+        except Exception as e:
+            history.append({"role": "assistant", "content": f"❌ Failed to create event: {str(e)}"})
+            return history, ""
+
+    # ---- FALLBACK CHAT ----
     response = groq_client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": message}],
     )
 
     reply = response.choices[0].message.content
-    history.append({"role": "user", "content": message})
     history.append({"role": "assistant", "content": reply})
     return history, ""
+
 
 # ------------------ GRADIO UI ------------------
 
