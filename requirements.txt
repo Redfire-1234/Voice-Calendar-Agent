@@ -14,4 +14,6 @@ python-dateutil
 python-dotenv
 itsdangerous
 psycopg2-binary
+tzlocal
+
 
