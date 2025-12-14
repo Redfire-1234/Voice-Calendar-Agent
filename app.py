@@ -206,22 +206,33 @@ def parse_datetime(date_str, time_str):
     """Parse date and time strings into datetime object."""
     today = datetime.datetime.now()
     
+    # Parse date
     if "tomorrow" in date_str.lower():
-        target = today + datetime.timedelta(days=1)
+        target_date = today.date() + datetime.timedelta(days=1)
     elif "today" in date_str.lower():
-        target = today
+        target_date = today.date()
     else:
         try:
-            target = parser.parse(date_str, fuzzy=True)
+            parsed = parser.parse(date_str, fuzzy=True)
+            target_date = parsed.date()
         except Exception:
-            target = today + datetime.timedelta(days=1)
+            target_date = today.date() + datetime.timedelta(days=1)
     
+    # Parse time - IMPORTANT: parse time independently
     try:
-        t = parser.parse(time_str, fuzzy=True)
-    except Exception:
-        t = today.replace(hour=9, minute=0)
-        
-    return target.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+        # Parse time string independently to avoid date interference
+        time_parsed = parser.parse(time_str, fuzzy=True)
+        hour = time_parsed.hour
+        minute = time_parsed.minute
+    except Exception as e:
+        print(f"⚠️ Time parse error for '{time_str}': {e}")
+        hour = 9
+        minute = 0
+    
+    # Combine date and time
+    result = datetime.datetime.combine(target_date, datetime.time(hour=hour, minute=minute))
+    print(f"📅 Parsed: date_str='{date_str}', time_str='{time_str}' → {result}")
+    return result
 
 
 def create_calendar_event(user_id, name, date_str, time_str, title=None):
@@ -230,28 +241,30 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         if not title:
             title = f"Meeting with {name}"
 
+        # Parse the datetime
         start_naive = parse_datetime(date_str, time_str)
+        end_naive = start_naive + datetime.timedelta(hours=1)
         
+        # Get timezone
         try:
             local_tz = tzlocal.get_localzone()
             tz_name = str(local_tz)
         except:
             tz_name = "UTC"
         
-        start_str = start_naive.strftime('%Y-%m-%dT%H:%M:%S')
-        end_naive = start_naive + datetime.timedelta(hours=1)
-        end_str = end_naive.strftime('%Y-%m-%dT%H:%M:%S')
+        print(f"🌍 Using timezone: {tz_name}")
+        print(f"⏰ Event time: {start_naive} to {end_naive}")
 
         service = get_calendar_service(user_id)
 
         event = {
             "summary": title,
             "start": {
-                "dateTime": start_str,
+                "dateTime": start_naive.isoformat(),
                 "timeZone": tz_name
             },
             "end": {
-                "dateTime": end_str,
+                "dateTime": end_naive.isoformat(),
                 "timeZone": tz_name
             },
             "description": f"Created by Calendar Agent for: {name}"
@@ -260,15 +273,18 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         result = service.events().insert(calendarId="primary", body=event).execute()
         
         print(f"✅ Event created: {result['id']}")
+        print(f"🔗 Event link: {result.get('htmlLink', '')}")
 
         return {
             "success": True,
-            "message": f"✅ Event created: **{title}** on **{start_naive.strftime('%A, %B %d at %I:%M %p')}**",
+            "message": f"✅ Event created: **{title}** on **{start_naive.strftime('%A, %B %d at %I:%M %p')}** ({tz_name})",
             "link": result.get("htmlLink", "")
         }
 
     except Exception as e:
         print(f"❌ Event creation error: {e}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "message": f"❌ Error creating event: {e}"}
 
 # ================== GROQ FUNCTION DEFINITION ==================
