@@ -493,17 +493,31 @@
 #     """Convert Gradio history to Groq message format."""
 #     msgs = []
     
-#     # Track the last 10 messages only to avoid context confusion
-#     recent_history = history[-10:] if len(history) > 10 else history
+#     # Check if this is a NEW schedule request (without complete date/time in the message itself)
+#     is_schedule = any(word in user_message.lower() for word in ["schedule", "book", "arrange", "create", "set up", "plan"])
+#     has_date = any(word in user_message.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "next", "this", "dec", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov"])
+#     has_time = any(word in user_message.lower() for word in ["am", "pm", ":", "noon", "morning", "afternoon", "evening"]) and any(char.isdigit() for char in user_message)
     
-#     for msg in recent_history:
-#         if isinstance(msg, dict):
-#             if msg.get("role") == "user":
-#                 msgs.append({"role": "user", "content": msg["content"]})
-#             elif msg.get("role") == "assistant":
-#                 # Remove event creation confirmations from context to avoid reuse
-#                 content = msg["content"]
-#                 if "✅ Event created:" not in content:
+#     if is_schedule and not (has_date and has_time):
+#         # NEW SCHEDULE REQUEST WITHOUT COMPLETE INFO
+#         # Don't include ANY previous context to avoid date/time contamination
+#         print(f"🚨 NEW SCHEDULE REQUEST DETECTED - CLEARING CONTEXT")
+#         # Start fresh - only include this message
+#     else:
+#         # Not a new schedule request OR has complete info - include some context
+#         # But still filter out previous date/time mentions
+#         for msg in history[-6:]:  # Only last 6 messages
+#             if isinstance(msg, dict):
+#                 content = msg.get("content", "")
+#                 # Skip event creation confirmations
+#                 if "✅ Event created:" in content:
+#                     continue
+                    
+#                 if msg.get("role") == "user":
+#                     # Filter out date/time from previous schedule requests
+#                     if not any(word in content.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "at", "am", "pm"]):
+#                         msgs.append({"role": "user", "content": content})
+#                 elif msg.get("role") == "assistant":
 #                     msgs.append({"role": "assistant", "content": content})
     
 #     if user_message and isinstance(user_message, str):
@@ -730,6 +744,7 @@
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 """
 Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
 Combines web OAuth flow with Groq function calling like the desktop example.
@@ -1225,6 +1240,10 @@ def format_messages_from_history(history, user_message):
     """Convert Gradio history to Groq message format."""
     msgs = []
     
+    # Ensure user_message is a string
+    if not isinstance(user_message, str):
+        user_message = str(user_message) if user_message else ""
+    
     # Check if this is a NEW schedule request (without complete date/time in the message itself)
     is_schedule = any(word in user_message.lower() for word in ["schedule", "book", "arrange", "create", "set up", "plan"])
     has_date = any(word in user_message.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "next", "this", "dec", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov"])
@@ -1241,6 +1260,9 @@ def format_messages_from_history(history, user_message):
         for msg in history[-6:]:  # Only last 6 messages
             if isinstance(msg, dict):
                 content = msg.get("content", "")
+                if not isinstance(content, str):
+                    continue
+                    
                 # Skip event creation confirmations
                 if "✅ Event created:" in content:
                     continue
@@ -1252,7 +1274,7 @@ def format_messages_from_history(history, user_message):
                 elif msg.get("role") == "assistant":
                     msgs.append({"role": "assistant", "content": content})
     
-    if user_message and isinstance(user_message, str):
+    if user_message:
         msgs.append({"role": "user", "content": user_message.strip()})
     
     return msgs
@@ -1260,8 +1282,12 @@ def format_messages_from_history(history, user_message):
 
 def chat(user_message, history, request: gr.Request):
     """Main chat handler with Groq function calling."""
-    if not user_message.strip():
+    if not user_message or (isinstance(user_message, str) and not user_message.strip()):
         return history, ""
+
+    # Convert to string if needed
+    if not isinstance(user_message, str):
+        user_message = str(user_message)
 
     user_id = request.session.get("user_id")
     email = request.session.get("email", "")
