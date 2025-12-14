@@ -471,6 +471,7 @@
 
 
 
+
 """
 Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
 Combines web OAuth flow with Groq function calling like the desktop example.
@@ -934,9 +935,13 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
             type="filepath",
             label="🎤",
             show_label=False,
-            scale=1
+            scale=1,
+            waveform_options={"show_recording_waveform": True}
         )
         send = gr.Button("Send", scale=1, variant="primary")
+    
+    with gr.Row():
+        record_again = gr.Button("🎤 Record Again", size="sm")
     
     clear = gr.Button("Reset Conversation", variant="secondary")
 
@@ -956,6 +961,9 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     
     # Voice input - transcribe and fill textbox
     voice_btn.change(transcribe_audio, voice_btn, msg)
+    
+    # Record again button - clears the audio widget
+    record_again.click(lambda: None, None, voice_btn)
 
 app = gr.mount_gradio_app(app, demo, path="/")
 
