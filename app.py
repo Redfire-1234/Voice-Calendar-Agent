@@ -492,12 +492,19 @@
 # def format_messages_from_history(history, user_message):
 #     """Convert Gradio history to Groq message format."""
 #     msgs = []
-#     for msg in history:
+    
+#     # Track the last 10 messages only to avoid context confusion
+#     recent_history = history[-10:] if len(history) > 10 else history
+    
+#     for msg in recent_history:
 #         if isinstance(msg, dict):
 #             if msg.get("role") == "user":
 #                 msgs.append({"role": "user", "content": msg["content"]})
 #             elif msg.get("role") == "assistant":
-#                 msgs.append({"role": "assistant", "content": msg["content"]})
+#                 # Remove event creation confirmations from context to avoid reuse
+#                 content = msg["content"]
+#                 if "✅ Event created:" not in content:
+#                     msgs.append({"role": "assistant", "content": content})
     
 #     if user_message and isinstance(user_message, str):
 #         msgs.append({"role": "user", "content": user_message.strip()})
@@ -585,12 +592,16 @@
 #                 if not args.get("date_str") or not args.get("time_str"):
 #                     assistant_reply = "❓ I need more information. Please provide:\n- **Date** (today, tomorrow, Monday, etc.)\n- **Time** (3 PM, 10 AM, etc.)\n\nExample: 'Schedule meeting with Aman tomorrow at 3 PM'"
 #                 else:
-#                     # Add user_id to args
-#                     args["user_id"] = user_id
-#                     result = create_calendar_event(**args)
-#                     assistant_reply = result["message"]
-#                     if result.get("link"):
-#                         assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
+#                     # Additional check: Make sure date_str and time_str are not empty strings
+#                     if not args["date_str"].strip() or not args["time_str"].strip():
+#                         assistant_reply = "❓ I need more information. Please provide:\n- **Date** (today, tomorrow, Monday, etc.)\n- **Time** (3 PM, 10 AM, etc.)\n\nExample: 'Schedule meeting with Aman tomorrow at 3 PM'"
+#                     else:
+#                         # Add user_id to args
+#                         args["user_id"] = user_id
+#                         result = create_calendar_event(**args)
+#                         assistant_reply = result["message"]
+#                         if result.get("link"):
+#                             assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
             
 #             elif tool_call.function.name == "list_upcoming_events":
 #                 args["user_id"] = user_id
@@ -1215,18 +1226,37 @@ def format_messages_from_history(history, user_message):
     """Convert Gradio history to Groq message format."""
     msgs = []
     
-    # Track the last 10 messages only to avoid context confusion
-    recent_history = history[-10:] if len(history) > 10 else history
+    # Only include the last interaction if we're starting a new schedule request
+    is_new_schedule_request = user_message and "schedule" in user_message.lower()
     
-    for msg in recent_history:
-        if isinstance(msg, dict):
+    if is_new_schedule_request:
+        # For new schedule requests, only include messages AFTER the last event creation
+        reversed_history = list(reversed(history))
+        filtered_history = []
+        
+        for msg in reversed_history:
+            if isinstance(msg, dict):
+                content = msg.get("content", "")
+                # Stop when we hit a previous event creation
+                if "✅ Event created:" in content:
+                    break
+                filtered_history.insert(0, msg)
+        
+        # Use filtered history
+        for msg in filtered_history[-5:]:  # Last 5 messages max
             if msg.get("role") == "user":
                 msgs.append({"role": "user", "content": msg["content"]})
             elif msg.get("role") == "assistant":
-                # Remove event creation confirmations from context to avoid reuse
-                content = msg["content"]
-                if "✅ Event created:" not in content:
-                    msgs.append({"role": "assistant", "content": content})
+                msgs.append({"role": "assistant", "content": msg["content"]})
+    else:
+        # For non-schedule requests, include recent history normally
+        recent_history = history[-8:] if len(history) > 8 else history
+        for msg in recent_history:
+            if isinstance(msg, dict):
+                if msg.get("role") == "user":
+                    msgs.append({"role": "user", "content": msg["content"]})
+                elif msg.get("role") == "assistant":
+                    msgs.append({"role": "assistant", "content": msg["content"]})
     
     if user_message and isinstance(user_message, str):
         msgs.append({"role": "user", "content": user_message.strip()})
