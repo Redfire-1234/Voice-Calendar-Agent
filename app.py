@@ -23,6 +23,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 
 from dateutil import parser
 import tzlocal
+import pytz
 
 from groq import Groq
 
@@ -203,8 +204,10 @@ def get_calendar_service(user_id):
 # ================== CALENDAR FUNCTION ==================
 
 def parse_datetime(date_str, time_str):
-    """Parse date and time strings into datetime object."""
-    today = datetime.datetime.now()
+    """Parse date and time strings into datetime object in India timezone."""
+    # Use India timezone
+    india_tz = pytz.timezone('Asia/Kolkata')
+    today = datetime.datetime.now(india_tz)
     
     # Parse date
     if "tomorrow" in date_str.lower():
@@ -229,9 +232,11 @@ def parse_datetime(date_str, time_str):
         hour = 9
         minute = 0
     
-    # Combine date and time
-    result = datetime.datetime.combine(target_date, datetime.time(hour=hour, minute=minute))
-    print(f"📅 Parsed: date_str='{date_str}', time_str='{time_str}' → {result}")
+    # Combine date and time in India timezone
+    naive_dt = datetime.datetime.combine(target_date, datetime.time(hour=hour, minute=minute))
+    result = india_tz.localize(naive_dt)
+    
+    print(f"📅 Parsed: date_str='{date_str}', time_str='{time_str}' → {result} (India Time)")
     return result
 
 
@@ -241,30 +246,26 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         if not title:
             title = f"Meeting with {name}"
 
-        # Parse the datetime
-        start_naive = parse_datetime(date_str, time_str)
-        end_naive = start_naive + datetime.timedelta(hours=1)
+        # Parse the datetime (already in India timezone from parse_datetime)
+        start_aware = parse_datetime(date_str, time_str)
+        end_aware = start_aware + datetime.timedelta(hours=1)
         
-        # Get timezone
-        try:
-            local_tz = tzlocal.get_localzone()
-            tz_name = str(local_tz)
-        except:
-            tz_name = "UTC"
+        # Timezone is already set to Asia/Kolkata
+        tz_name = "Asia/Kolkata"
         
         print(f"🌍 Using timezone: {tz_name}")
-        print(f"⏰ Event time: {start_naive} to {end_naive}")
+        print(f"⏰ Event time: {start_aware} to {end_aware}")
 
         service = get_calendar_service(user_id)
 
         event = {
             "summary": title,
             "start": {
-                "dateTime": start_naive.isoformat(),
+                "dateTime": start_aware.isoformat(),
                 "timeZone": tz_name
             },
             "end": {
-                "dateTime": end_naive.isoformat(),
+                "dateTime": end_aware.isoformat(),
                 "timeZone": tz_name
             },
             "description": f"Created by Calendar Agent for: {name}"
@@ -277,7 +278,7 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
 
         return {
             "success": True,
-            "message": f"✅ Event created: **{title}** on **{start_naive.strftime('%A, %B %d at %I:%M %p')}** ({tz_name})",
+            "message": f"✅ Event created: **{title}** on **{start_aware.strftime('%A, %B %d at %I:%M %p')}** (India Time)",
             "link": result.get("htmlLink", "")
         }
 
@@ -379,6 +380,9 @@ def chat(user_message, history, request: gr.Request):
                 args = json.loads(tool_call.function.arguments)
             else:
                 args = dict(tool_call.function.arguments)
+            
+            # DEBUG: Print what Groq extracted
+            print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
             
             if tool_call.function.name == "create_calendar_event":
                 # Add user_id to args
