@@ -9,6 +9,7 @@ psycopg2-binary
 python-dateutil
 itsdangerous
 tzlocal
+pytz
 
 
 
