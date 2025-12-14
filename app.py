@@ -730,7 +730,6 @@
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
 """
 Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
 Combines web OAuth flow with Groq function calling like the desktop example.
@@ -1226,37 +1225,32 @@ def format_messages_from_history(history, user_message):
     """Convert Gradio history to Groq message format."""
     msgs = []
     
-    # Only include the last interaction if we're starting a new schedule request
-    is_new_schedule_request = user_message and "schedule" in user_message.lower()
+    # Check if this is a NEW schedule request (without complete date/time in the message itself)
+    is_schedule = any(word in user_message.lower() for word in ["schedule", "book", "arrange", "create", "set up", "plan"])
+    has_date = any(word in user_message.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "next", "this", "dec", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov"])
+    has_time = any(word in user_message.lower() for word in ["am", "pm", ":", "noon", "morning", "afternoon", "evening"]) and any(char.isdigit() for char in user_message)
     
-    if is_new_schedule_request:
-        # For new schedule requests, only include messages AFTER the last event creation
-        reversed_history = list(reversed(history))
-        filtered_history = []
-        
-        for msg in reversed_history:
+    if is_schedule and not (has_date and has_time):
+        # NEW SCHEDULE REQUEST WITHOUT COMPLETE INFO
+        # Don't include ANY previous context to avoid date/time contamination
+        print(f"🚨 NEW SCHEDULE REQUEST DETECTED - CLEARING CONTEXT")
+        # Start fresh - only include this message
+    else:
+        # Not a new schedule request OR has complete info - include some context
+        # But still filter out previous date/time mentions
+        for msg in history[-6:]:  # Only last 6 messages
             if isinstance(msg, dict):
                 content = msg.get("content", "")
-                # Stop when we hit a previous event creation
+                # Skip event creation confirmations
                 if "✅ Event created:" in content:
-                    break
-                filtered_history.insert(0, msg)
-        
-        # Use filtered history
-        for msg in filtered_history[-5:]:  # Last 5 messages max
-            if msg.get("role") == "user":
-                msgs.append({"role": "user", "content": msg["content"]})
-            elif msg.get("role") == "assistant":
-                msgs.append({"role": "assistant", "content": msg["content"]})
-    else:
-        # For non-schedule requests, include recent history normally
-        recent_history = history[-8:] if len(history) > 8 else history
-        for msg in recent_history:
-            if isinstance(msg, dict):
+                    continue
+                    
                 if msg.get("role") == "user":
-                    msgs.append({"role": "user", "content": msg["content"]})
+                    # Filter out date/time from previous schedule requests
+                    if not any(word in content.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "at", "am", "pm"]):
+                        msgs.append({"role": "user", "content": content})
                 elif msg.get("role") == "assistant":
-                    msgs.append({"role": "assistant", "content": msg["content"]})
+                    msgs.append({"role": "assistant", "content": content})
     
     if user_message and isinstance(user_message, str):
         msgs.append({"role": "user", "content": user_message.strip()})
