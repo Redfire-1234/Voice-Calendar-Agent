@@ -525,7 +525,28 @@
         
 #         messages.insert(0, {
 #             "role": "system",
-#             "content": "You are a friendly calendar assistant. You can: 1) Schedule events using 'create_calendar_event', 2) List upcoming events using 'list_upcoming_events', 3) Delete/cancel events using 'delete_calendar_event'. Always confirm details before scheduling or deleting. Be helpful and professional."
+#             "content": """You are a friendly calendar assistant. You can:
+# 1) Schedule events using 'create_calendar_event'
+# 2) List upcoming events using 'list_upcoming_events'
+# 3) Delete/cancel events using 'delete_calendar_event'
+
+# CRITICAL RULES FOR SCHEDULING:
+# - NEVER call create_calendar_event without ALL required information: name, date, and time
+# - If the user does NOT provide a date (today, tomorrow, Monday, etc.), you MUST ask for it
+# - If the user does NOT provide a time (3 PM, 10 AM, etc.), you MUST ask for it
+# - DO NOT make assumptions or use default values
+# - DO NOT guess the date or time
+# - Always confirm ALL details before calling the function
+
+# Example:
+# User: "Schedule meeting with Bob"
+# You: "I'd be happy to schedule that! What date and time would you like to meet with Bob?"
+
+# User: "Schedule meeting with Bob tomorrow"
+# You: "Great! What time tomorrow would you like to meet with Bob?"
+
+# User: "Schedule meeting with Bob tomorrow at 3 PM"
+# You: [NOW call create_calendar_event with all required info]"""
 #         })
 
 #         response = groq_client.chat.completions.create(
@@ -553,12 +574,16 @@
 #             print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
             
 #             if tool_call.function.name == "create_calendar_event":
-#                 # Add user_id to args
-#                 args["user_id"] = user_id
-#                 result = create_calendar_event(**args)
-#                 assistant_reply = result["message"]
-#                 if result.get("link"):
-#                     assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
+#                 # VALIDATION: Check if all required fields are present
+#                 if not args.get("date_str") or not args.get("time_str"):
+#                     assistant_reply = "❓ I need more information. Please provide:\n- **Date** (today, tomorrow, Monday, etc.)\n- **Time** (3 PM, 10 AM, etc.)\n\nExample: 'Schedule meeting with Aman tomorrow at 3 PM'"
+#                 else:
+#                     # Add user_id to args
+#                     args["user_id"] = user_id
+#                     result = create_calendar_event(**args)
+#                     assistant_reply = result["message"]
+#                     if result.get("link"):
+#                         assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
             
 #             elif tool_call.function.name == "list_upcoming_events":
 #                 args["user_id"] = user_id
@@ -1228,12 +1253,19 @@ CRITICAL RULES FOR SCHEDULING:
 - DO NOT guess the date or time
 - Always confirm ALL details before calling the function
 
-Example:
-User: "Schedule meeting with Bob"
-You: "I'd be happy to schedule that! What date and time would you like to meet with Bob?"
+HANDLING NON-CALENDAR QUESTIONS:
+- If user says greetings (hi, hello, hey), respond warmly and ask how you can help with their calendar
+- If user says thanks/thank you, respond briefly: "You're welcome! Let me know if you need anything else with your calendar."
+- If user asks unrelated questions (weather, news, general knowledge, jokes, etc.), politely redirect: "I'm a calendar assistant and can only help with scheduling, viewing, and managing your calendar events. Is there anything calendar-related I can help you with?"
+- Keep responses SHORT and focused on calendar tasks
+- Don't try to answer questions outside of calendar management
 
-User: "Schedule meeting with Bob tomorrow"
-You: "Great! What time tomorrow would you like to meet with Bob?"
+Example:
+User: "What's the weather today?"
+You: "I'm a calendar assistant and can only help with scheduling and managing your calendar events. Is there a meeting you'd like to schedule?"
+
+User: "Thanks!"
+You: "You're welcome! Let me know if you need anything else with your calendar."
 
 User: "Schedule meeting with Bob tomorrow at 3 PM"
 You: [NOW call create_calendar_event with all required info]"""
