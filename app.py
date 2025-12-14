@@ -1,5 +1,10 @@
+"""
+Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
+Combines web OAuth flow with Groq function calling like the desktop example.
+"""
+
 import os
-import re
+import json
 import datetime
 from typing import Optional
 
@@ -19,12 +24,17 @@ from google.auth.transport.requests import Request as GoogleRequest
 from dateutil import parser
 import tzlocal
 
+from groq import Groq
+
 # ================== ENV ==================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -42,7 +52,6 @@ app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET)
 # ================== DATABASE ==================
 
 def init_db():
-    """Create table if it doesn't exist"""
     try:
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -55,7 +64,7 @@ def init_db():
                         expiry TIMESTAMP
                     )
                 """)
-                print("✅ Database table ready")
+                print("✅ Database initialized")
     except Exception as e:
         print(f"❌ DB init error: {e}")
 
@@ -81,7 +90,6 @@ def save_tokens(user_id, email, creds: Credentials):
                 creds.refresh_token,
                 creds.expiry
             ))
-            print(f"✅ Saved tokens for {email}")
 
 def load_tokens(user_id) -> Optional[Credentials]:
     with get_db() as conn:
@@ -90,7 +98,6 @@ def load_tokens(user_id) -> Optional[Credentials]:
             row = cur.fetchone()
 
     if not row:
-        print(f"❌ No tokens found for user {user_id}")
         return None
 
     creds = Credentials(
@@ -102,7 +109,6 @@ def load_tokens(user_id) -> Optional[Credentials]:
         scopes=SCOPES,
     )
     creds.expiry = row["expiry"]
-    print(f"✅ Loaded tokens for user {user_id}")
     return creds
 
 # ================== GOOGLE OAUTH ==================
@@ -160,7 +166,7 @@ def oauth2callback(request: Request):
         request.session["user_id"] = user["id"]
         request.session["email"] = user["email"]
 
-        print(f"✅ User {user['email']} logged in successfully")
+        print(f"✅ User {user['email']} authenticated")
         return RedirectResponse("/")
         
     except Exception as e:
@@ -172,67 +178,153 @@ def logout(request: Request):
     request.session.clear()
     return RedirectResponse("/")
 
-# ================== CALENDAR ==================
+# ================== CALENDAR SERVICE ==================
 
 def get_calendar_service(user_id):
+    """Get authenticated calendar service for user."""
     creds = load_tokens(user_id)
     if not creds:
-        raise Exception("User not authenticated. Please login again.")
+        raise Exception("User not authenticated. Please login.")
 
-    # Check if token is expired and refresh if needed
     if creds.expired and creds.refresh_token:
-        print(f"🔄 Refreshing expired token for user {user_id}")
-        try:
-            creds.refresh(GoogleRequest())
-            # Get email from DB for refresh
-            with get_db() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT email FROM user_tokens WHERE user_id=%s", (user_id,))
-                    row = cur.fetchone()
-                    email = row["email"] if row else ""
-            save_tokens(user_id, email, creds)
-            print(f"✅ Token refreshed successfully")
-        except Exception as e:
-            print(f"❌ Token refresh failed: {e}")
-            raise Exception("Token refresh failed. Please login again.")
+        print(f"🔄 Refreshing token for user {user_id}")
+        creds.refresh(GoogleRequest())
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT email FROM user_tokens WHERE user_id=%s", (user_id,))
+                row = cur.fetchone()
+                email = row["email"] if row else ""
+        save_tokens(user_id, email, creds)
     elif creds.expired:
-        raise Exception("Token expired and no refresh token available. Please login again.")
+        raise Exception("Token expired. Please login again.")
 
     return build("calendar", "v3", credentials=creds)
 
-def create_event(user_id, title, start_time):
-    try:
-        service = get_calendar_service(user_id)
+# ================== CALENDAR FUNCTION ==================
 
-        end_time = start_time + datetime.timedelta(hours=1)
-        tz = str(tzlocal.get_localzone())
+def parse_datetime(date_str, time_str):
+    """Parse date and time strings into datetime object."""
+    today = datetime.datetime.now()
+    
+    if "tomorrow" in date_str.lower():
+        target = today + datetime.timedelta(days=1)
+    elif "today" in date_str.lower():
+        target = today
+    else:
+        try:
+            target = parser.parse(date_str, fuzzy=True)
+        except Exception:
+            target = today + datetime.timedelta(days=1)
+    
+    try:
+        t = parser.parse(time_str, fuzzy=True)
+    except Exception:
+        t = today.replace(hour=9, minute=0)
+        
+    return target.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+
+
+def create_calendar_event(user_id, name, date_str, time_str, title=None):
+    """Create calendar event - called by Groq function calling."""
+    try:
+        if not title:
+            title = f"Meeting with {name}"
+
+        start_naive = parse_datetime(date_str, time_str)
+        
+        try:
+            local_tz = tzlocal.get_localzone()
+            tz_name = str(local_tz)
+        except:
+            tz_name = "UTC"
+        
+        start_str = start_naive.strftime('%Y-%m-%dT%H:%M:%S')
+        end_naive = start_naive + datetime.timedelta(hours=1)
+        end_str = end_naive.strftime('%Y-%m-%dT%H:%M:%S')
+
+        service = get_calendar_service(user_id)
 
         event = {
             "summary": title,
-            "start": {"dateTime": start_time.isoformat(), "timeZone": tz},
-            "end": {"dateTime": end_time.isoformat(), "timeZone": tz},
+            "start": {
+                "dateTime": start_str,
+                "timeZone": tz_name
+            },
+            "end": {
+                "dateTime": end_str,
+                "timeZone": tz_name
+            },
+            "description": f"Created by Calendar Agent for: {name}"
         }
 
-        print(f"📅 Creating event: {title} at {start_time}")
-        created = service.events().insert(
-            calendarId="primary",
-            body=event
-        ).execute()
+        result = service.events().insert(calendarId="primary", body=event).execute()
+        
+        print(f"✅ Event created: {result['id']}")
 
-        if "id" not in created:
-            raise Exception("Event creation failed - no ID returned")
+        return {
+            "success": True,
+            "message": f"✅ Event created: **{title}** on **{start_naive.strftime('%A, %B %d at %I:%M %p')}**",
+            "link": result.get("htmlLink", "")
+        }
 
-        print(f"✅ Event created with ID: {created['id']}")
-        event_link = created.get('htmlLink', '')
-        return f"✅ **Event Created!**\n\n📅 {title}\n🕐 {start_time.strftime('%A, %B %d at %I:%M %p')}\n🔗 [View in Calendar]({event_link})"
-    
     except Exception as e:
         print(f"❌ Event creation error: {e}")
-        raise
+        return {"success": False, "message": f"❌ Error creating event: {e}"}
 
-# ================== CHAT ==================
+# ================== GROQ FUNCTION DEFINITION ==================
 
-def chat_fn(message, history, request: gr.Request):
+functions = [
+    {
+        "name": "create_calendar_event",
+        "description": "Create a Google Calendar event. Use this when the user wants to schedule a meeting or event.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string", 
+                    "description": "The person's name or event topic (e.g., 'Bob', 'Team Meeting')"
+                },
+                "date_str": {
+                    "type": "string", 
+                    "description": "The date (e.g., 'tomorrow', 'Friday', 'Dec 15')"
+                },
+                "time_str": {
+                    "type": "string", 
+                    "description": "The time (e.g., '3 PM', '10:30 AM', '14:00')"
+                },
+                "title": {
+                    "type": "string", 
+                    "description": "Optional custom event title"
+                }
+            },
+            "required": ["name", "date_str", "time_str"]
+        }
+    }
+]
+
+# ================== CHAT HANDLER ==================
+
+def format_messages_from_history(history, user_message):
+    """Convert Gradio history to Groq message format."""
+    msgs = []
+    for msg in history:
+        if isinstance(msg, dict):
+            if msg.get("role") == "user":
+                msgs.append({"role": "user", "content": msg["content"]})
+            elif msg.get("role") == "assistant":
+                msgs.append({"role": "assistant", "content": msg["content"]})
+    
+    if user_message and isinstance(user_message, str):
+        msgs.append({"role": "user", "content": user_message.strip()})
+    
+    return msgs
+
+
+def chat(user_message, history, request: gr.Request):
+    """Main chat handler with Groq function calling."""
+    if not user_message.strip():
+        return history, ""
+
     user_id = request.session.get("user_id")
     email = request.session.get("email", "")
 
@@ -243,137 +335,72 @@ def chat_fn(message, history, request: gr.Request):
         })
         return history, ""
 
-    history.append({"role": "user", "content": message})
-
-    # Check if user wants to schedule something
-    schedule_keywords = ["schedule", "book", "create", "add", "set up"]
-    has_schedule_intent = any(keyword in message.lower() for keyword in schedule_keywords)
-
-    if not has_schedule_intent:
-        # Just a greeting or question - don't create events!
-        history.append({
-            "role": "assistant", 
-            "content": f"👋 Hi! I can help you schedule meetings.\n\n**Try saying:**\n- 'Schedule meeting with John tomorrow at 3 PM'\n- 'Book a call with Sarah on Friday at 10 AM'"
+    try:
+        messages = format_messages_from_history(history, user_message)
+        
+        messages.insert(0, {
+            "role": "system",
+            "content": "You are a friendly calendar assistant. Your primary function is to schedule events using the 'create_calendar_event' tool. Always confirm details before scheduling. Be helpful and professional."
         })
+
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            tools=[{"type": "function", "function": fn} for fn in functions],
+            tool_choice="auto",
+            max_tokens=512,
+            temperature=0.7
+        )
+
+        msg = response.choices[0].message
+
+        # Check if function was called
+        if msg.tool_calls:
+            tool_call = msg.tool_calls[0]
+            
+            # Parse function arguments
+            if isinstance(tool_call.function.arguments, str):
+                args = json.loads(tool_call.function.arguments)
+            else:
+                args = dict(tool_call.function.arguments)
+            
+            if tool_call.function.name == "create_calendar_event":
+                # Add user_id to args
+                args["user_id"] = user_id
+                result = create_calendar_event(**args)
+                assistant_reply = result["message"]
+                if result.get("link"):
+                    assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
+            else:
+                assistant_reply = f"❌ Unknown function: {tool_call.function.name}"
+        else:
+            # No function call - just chat response
+            assistant_reply = msg.content
+
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": assistant_reply})
         return history, ""
 
-    # Now parse the scheduling request
-    try:
-        # Extract person name
-        name_match = re.search(r"with (\w+)", message.lower())
-        person_name = name_match.group(1).capitalize() if name_match else None
-
-        # Extract time - look for patterns like "3 PM", "10:30 AM", "14:00"
-        time_match = re.search(r"at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)", message.lower())
-        
-        if not time_match:
-            history.append({
-                "role": "assistant",
-                "content": "❓ **I need more details!**\n\nPlease specify:\n- What time? (e.g., '3 PM', '10:30 AM')\n\nExample: 'Schedule meeting with John tomorrow at 3 PM'"
-            })
-            return history, ""
-        
-        time_str = time_match.group(1).strip()
-
-        # Extract date
-        today = datetime.date.today()
-        target_date = None
-        
-        if "tomorrow" in message.lower():
-            target_date = today + datetime.timedelta(days=1)
-            day_name = "tomorrow"
-        elif "today" in message.lower():
-            target_date = today
-            day_name = "today"
-        elif "monday" in message.lower():
-            days_ahead = (0 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Monday"
-        elif "tuesday" in message.lower():
-            days_ahead = (1 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Tuesday"
-        elif "wednesday" in message.lower():
-            days_ahead = (2 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Wednesday"
-        elif "thursday" in message.lower():
-            days_ahead = (3 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Thursday"
-        elif "friday" in message.lower():
-            days_ahead = (4 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Friday"
-        elif "saturday" in message.lower():
-            days_ahead = (5 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Saturday"
-        elif "sunday" in message.lower():
-            days_ahead = (6 - today.weekday()) % 7
-            if days_ahead == 0:
-                days_ahead = 7
-            target_date = today + datetime.timedelta(days=days_ahead)
-            day_name = "Sunday"
-        else:
-            # No date specified - ask for it!
-            history.append({
-                "role": "assistant",
-                "content": "❓ **When should I schedule this?**\n\nPlease specify a day:\n- tomorrow\n- today\n- Monday, Tuesday, etc.\n\nExample: 'Schedule meeting with John tomorrow at 3 PM'"
-            })
-            return history, ""
-
-        # Parse the full datetime
-        start_time = parser.parse(f"{target_date} {time_str}")
-        
-        # Create event title
-        if person_name:
-            title = f"Meeting with {person_name}"
-        else:
-            title = "Meeting"
-
-        # Confirm before creating
-        confirmation = f"📅 **Ready to schedule:**\n\n" \
-                      f"• {title}\n" \
-                      f"• {start_time.strftime('%A, %B %d at %I:%M %p')}\n\n" \
-                      f"Creating event..."
-        
-        history.append({"role": "assistant", "content": confirmation})
-
-        # Create the event
-        result = create_event(user_id, title, start_time)
-        history.append({"role": "assistant", "content": result})
-        
-    except ValueError as e:
-        history.append({
-            "role": "assistant", 
-            "content": f"❌ **Couldn't parse the time.**\n\nPlease use format like:\n- '3 PM'\n- '10:30 AM'\n- '14:00'\n\nError: {str(e)}"
-        })
     except Exception as e:
-        print(f"❌ Error in chat_fn: {e}")
-        history.append({
-            "role": "assistant", 
-            "content": f"❌ **Error:** {str(e)}\n\nTry [logging in again](/login) if the problem persists."
-        })
+        print(f"❌ Chat error: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        error_msg = f"❌ Error: {str(e)}\n\nTry [logging in again](/login) if the problem persists."
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": error_msg})
+        return history, ""
 
-    return history, ""
 
-# ================== UI ==================
+def reset_conversation():
+    """Reset chat history."""
+    return [], ""
 
-with gr.Blocks(title="Calendar Agent", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 📅 Calendar Agent")
+# ================== GRADIO UI ==================
+
+with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 🎙️ Voice Calendar Agent")
+    gr.Markdown("**AI-powered calendar scheduling with natural language**")
     
     with gr.Row():
         gr.Markdown("[🔑 Login with Google](/login)")
@@ -383,24 +410,28 @@ with gr.Blocks(title="Calendar Agent", theme=gr.themes.Soft()) as demo:
     
     with gr.Row():
         msg = gr.Textbox(
-            placeholder="Schedule meeting with Fauzia tomorrow at 8 AM",
+            label="Message",
+            placeholder="Schedule a meeting with Bob tomorrow at 2 PM...",
             show_label=False,
             scale=9
         )
         send = gr.Button("Send", scale=1, variant="primary")
     
-    gr.Markdown("### 💡 Examples:")
+    clear = gr.Button("Reset Conversation", variant="secondary")
+
+    gr.Markdown("### 💡 Try saying:")
     gr.Examples(
         examples=[
-            "Schedule meeting with Fauzia tomorrow at 8 AM",
-            "Book a call with John on Friday at 2 PM",
-            "Create meeting with Sarah on Monday at 10:30 AM"
+            "Schedule a meeting with Bob tomorrow at 2 PM",
+            "Book a call with Sarah on Friday at 10:30 AM",
+            "Create an appointment with Dr. Smith next Monday at 9 AM"
         ],
         inputs=msg
     )
 
-    msg.submit(chat_fn, [msg, chatbot], [chatbot, msg])
-    send.click(chat_fn, [msg, chatbot], [chatbot, msg])
+    send.click(chat, [msg, chatbot], [chatbot, msg])
+    msg.submit(chat, [msg, chatbot], [chatbot, msg])
+    clear.click(reset_conversation, None, [chatbot, msg])
 
 app = gr.mount_gradio_app(app, demo, path="/")
 
@@ -409,7 +440,8 @@ app = gr.mount_gradio_app(app, demo, path="/")
 @app.on_event("startup")
 async def startup():
     init_db()
-    print("✅ Calendar Agent started successfully")
+    print("✅ Voice Calendar Agent started!")
+    print(f"📍 Redirect URI: {REDIRECT_URI}")
 
 # ================== START ==================
 
