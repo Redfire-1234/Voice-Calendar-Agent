@@ -416,6 +416,27 @@
 #     """Reset chat history."""
 #     return [], ""
 
+
+# def transcribe_audio(audio_path):
+#     """Convert voice to text using Groq Whisper."""
+#     if not audio_path:
+#         return ""
+    
+#     try:
+#         with open(audio_path, "rb") as file:
+#             transcription = groq_client.audio.transcriptions.create(
+#                 file=(audio_path, file.read()),
+#                 model="whisper-large-v3-turbo",
+#                 response_format="text"
+#             )
+        
+#         print(f"🎤 Transcribed: {transcription}")
+#         return transcription
+    
+#     except Exception as e:
+#         print(f"❌ Transcription error: {e}")
+#         return ""
+
 # # ================== GRADIO UI ==================
 
 # with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
@@ -433,9 +454,20 @@
 #             label="Message",
 #             placeholder="Schedule a meeting with Bob tomorrow at 2 PM...",
 #             show_label=False,
-#             scale=9
+#             scale=8
+#         )
+#         voice_btn = gr.Audio(
+#             sources=["microphone"],
+#             type="filepath",
+#             label="🎤",
+#             show_label=False,
+#             scale=1,
+#             waveform_options={"show_recording_waveform": True}
 #         )
 #         send = gr.Button("Send", scale=1, variant="primary")
+    
+#     with gr.Row():
+#         record_again = gr.Button("🎤 Record Again", size="sm")
     
 #     clear = gr.Button("Reset Conversation", variant="secondary")
 
@@ -452,6 +484,12 @@
 #     send.click(chat, [msg, chatbot], [chatbot, msg])
 #     msg.submit(chat, [msg, chatbot], [chatbot, msg])
 #     clear.click(reset_conversation, None, [chatbot, msg])
+    
+#     # Voice input - transcribe and fill textbox
+#     voice_btn.change(transcribe_audio, voice_btn, msg)
+    
+#     # Record again button - clears the audio widget
+#     record_again.click(lambda: None, None, voice_btn)
 
 # app = gr.mount_gradio_app(app, demo, path="/")
 
@@ -468,9 +506,6 @@
 # if __name__ == "__main__":
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
-
-
 
 """
 Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
@@ -675,7 +710,7 @@ def get_calendar_service(user_id):
 
     return build("calendar", "v3", credentials=creds)
 
-# ================== CALENDAR FUNCTION ==================
+# ================== CALENDAR FUNCTIONS ==================
 
 def parse_datetime(date_str, time_str):
     """Parse date and time strings into datetime object in India timezone."""
@@ -753,7 +788,8 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         return {
             "success": True,
             "message": f"✅ Event created: **{title}** on **{start_aware.strftime('%A, %B %d at %I:%M %p')}** (India Time)",
-            "link": result.get("htmlLink", "")
+            "link": result.get("htmlLink", ""),
+            "event_id": result['id']
         }
 
     except Exception as e:
@@ -761,6 +797,143 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         import traceback
         traceback.print_exc()
         return {"success": False, "message": f"❌ Error creating event: {e}"}
+
+
+def list_upcoming_events(user_id, max_results=10):
+    """List upcoming events from user's calendar."""
+    try:
+        service = get_calendar_service(user_id)
+        
+        # Get current time in India timezone
+        india_tz = pytz.timezone('Asia/Kolkata')
+        now = datetime.datetime.now(india_tz).isoformat()
+        
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=now,
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        
+        if not events:
+            return {
+                "success": True,
+                "message": "📅 No upcoming events found.",
+                "events": []
+            }
+        
+        event_list = []
+        for event in events:
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            event_list.append({
+                "id": event['id'],
+                "summary": event.get('summary', 'No title'),
+                "start": start
+            })
+        
+        # Format message
+        msg = "📅 **Your upcoming events:**\n\n"
+        for i, evt in enumerate(event_list, 1):
+            try:
+                dt = parser.parse(evt['start'])
+                time_str = dt.strftime('%A, %B %d at %I:%M %p')
+            except:
+                time_str = evt['start']
+            msg += f"{i}. **{evt['summary']}** - {time_str}\n"
+        
+        return {
+            "success": True,
+            "message": msg,
+            "events": event_list
+        }
+        
+    except Exception as e:
+        print(f"❌ List events error: {e}")
+        return {"success": False, "message": f"❌ Error listing events: {e}", "events": []}
+
+
+def delete_calendar_event(user_id, name=None, date_str=None):
+    """Delete a calendar event by name or date."""
+    try:
+        service = get_calendar_service(user_id)
+        
+        # Get upcoming events
+        result = list_upcoming_events(user_id, max_results=50)
+        if not result["success"] or not result["events"]:
+            return {"success": False, "message": "❌ No upcoming events to delete."}
+        
+        events = result["events"]
+        
+        # Find matching event
+        event_to_delete = None
+        
+        if name:
+            # Search by name (case-insensitive, partial match)
+            name_lower = name.lower()
+            for evt in events:
+                if name_lower in evt["summary"].lower():
+                    event_to_delete = evt
+                    break
+        
+        if not event_to_delete and date_str:
+            # Search by date
+            target_date = None
+            today = datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
+            
+            if "tomorrow" in date_str.lower():
+                target_date = (today + datetime.timedelta(days=1)).date()
+            elif "today" in date_str.lower():
+                target_date = today.date()
+            else:
+                try:
+                    parsed = parser.parse(date_str, fuzzy=True)
+                    target_date = parsed.date()
+                except:
+                    pass
+            
+            if target_date:
+                for evt in events:
+                    try:
+                        evt_date = parser.parse(evt["start"]).date()
+                        if evt_date == target_date:
+                            event_to_delete = evt
+                            break
+                    except:
+                        pass
+        
+        if not event_to_delete:
+            return {
+                "success": False,
+                "message": f"❌ Could not find event matching '{name or date_str}'. Try listing your events first."
+            }
+        
+        # Delete the event
+        service.events().delete(
+            calendarId='primary',
+            eventId=event_to_delete['id']
+        ).execute()
+        
+        print(f"✅ Event deleted: {event_to_delete['id']}")
+        
+        try:
+            dt = parser.parse(event_to_delete['start'])
+            time_str = dt.strftime('%A, %B %d at %I:%M %p')
+        except:
+            time_str = event_to_delete['start']
+        
+        return {
+            "success": True,
+            "message": f"✅ Deleted: **{event_to_delete['summary']}** ({time_str})"
+        }
+        
+    except Exception as e:
+        print(f"❌ Delete event error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": f"❌ Error deleting event: {e}"}
 
 # ================== GROQ FUNCTION DEFINITION ==================
 
@@ -789,6 +962,36 @@ functions = [
                 }
             },
             "required": ["name", "date_str", "time_str"]
+        }
+    },
+    {
+        "name": "list_upcoming_events",
+        "description": "List the user's upcoming calendar events. Use when user asks to see their schedule or upcoming meetings.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of events to return (default 10)"
+                }
+            }
+        }
+    },
+    {
+        "name": "delete_calendar_event",
+        "description": "Delete/cancel a calendar event. Use when user wants to cancel or delete a meeting.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "The person's name or event name to delete (e.g., 'Bob', 'Team Meeting')"
+                },
+                "date_str": {
+                    "type": "string",
+                    "description": "The date of the event to delete (e.g., 'tomorrow', 'Friday')"
+                }
+            }
         }
     }
 ]
@@ -831,7 +1034,7 @@ def chat(user_message, history, request: gr.Request):
         
         messages.insert(0, {
             "role": "system",
-            "content": "You are a friendly calendar assistant. Your primary function is to schedule events using the 'create_calendar_event' tool. Always confirm details before scheduling. Be helpful and professional."
+            "content": "You are a friendly calendar assistant. You can: 1) Schedule events using 'create_calendar_event', 2) List upcoming events using 'list_upcoming_events', 3) Delete/cancel events using 'delete_calendar_event'. Always confirm details before scheduling or deleting. Be helpful and professional."
         })
 
         response = groq_client.chat.completions.create(
@@ -865,6 +1068,17 @@ def chat(user_message, history, request: gr.Request):
                 assistant_reply = result["message"]
                 if result.get("link"):
                     assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
+            
+            elif tool_call.function.name == "list_upcoming_events":
+                args["user_id"] = user_id
+                result = list_upcoming_events(**args)
+                assistant_reply = result["message"]
+            
+            elif tool_call.function.name == "delete_calendar_event":
+                args["user_id"] = user_id
+                result = delete_calendar_event(**args)
+                assistant_reply = result["message"]
+            
             else:
                 assistant_reply = f"❌ Unknown function: {tool_call.function.name}"
         else:
@@ -950,7 +1164,9 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
         examples=[
             "Schedule a meeting with Bob tomorrow at 2 PM",
             "Book a call with Sarah on Friday at 10:30 AM",
-            "Create an appointment with Dr. Smith next Monday at 9 AM"
+            "Show me my upcoming meetings",
+            "Cancel my meeting with Bob",
+            "Delete tomorrow's meeting"
         ],
         inputs=msg
     )
