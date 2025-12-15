@@ -1052,7 +1052,7 @@ def parse_datetime(date_str, time_str):
             temp_str = date_str
             
             # Convert 2-digit year to 4-digit if present
-            year_match = re.search(r'\b(\d{2})\b', text)
+            year_match = re.search(r'\b(\d{2})\b
 
 
 def create_calendar_event(user_id, name, date_str, time_str, title=None):
