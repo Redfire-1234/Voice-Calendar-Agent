@@ -805,20 +805,20 @@
 #     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 """
-Voice Calendar Agent - FIXED VERSION
-Senior-level implementation with slot memory
+Voice Calendar Agent – FINAL FIXED VERSION
+Multi-turn slot memory + safe session handling
 """
 
-import os, json, datetime
+import os
+import datetime
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from typing import Optional
 
 import gradio as gr
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
 
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -828,28 +828,19 @@ from google.auth.transport.requests import Request as GoogleRequest
 from dateutil import parser
 import pytz
 
-from groq import Groq
-
 # ================== ENV ==================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-groq_client = Groq(api_key=GROQ_API_KEY)
+REDIRECT_URI = os.getenv("REDIRECT_URI")
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
 ]
-
-REDIRECT_URI = os.getenv(
-    "REDIRECT_URI",
-    "https://voice-calendar-agent.onrender.com/oauth2callback",
-)
 
 # ================== FASTAPI ==================
 
@@ -878,7 +869,7 @@ def init_db():
                     expiry TIMESTAMP
                 )
             """)
-    print("✅ DB ready")
+    print("✅ Database ready")
 
 def save_tokens(user_id, email, creds: Credentials):
     with get_db() as conn:
@@ -892,11 +883,12 @@ def save_tokens(user_id, email, creds: Credentials):
                     expiry=EXCLUDED.expiry
             """, (user_id, email, creds.token, creds.refresh_token, creds.expiry))
 
-def load_tokens(user_id):
+def load_tokens(user_id) -> Optional[Credentials]:
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM user_tokens WHERE user_id=%s", (user_id,))
             row = cur.fetchone()
+
     if not row:
         return None
 
@@ -929,8 +921,10 @@ def login(request: Request):
     )
 
     auth_url, state = flow.authorization_url(
-        access_type="offline", prompt="consent"
+        access_type="offline",
+        prompt="consent",
     )
+
     request.session["state"] = state
     return RedirectResponse(auth_url)
 
@@ -959,7 +953,6 @@ def oauth2callback(request: Request):
     save_tokens(user["id"], user["email"], creds)
 
     request.session["user_id"] = user["id"]
-    request.session["email"] = user["email"]
     request.session["pending_event"] = {}
 
     return RedirectResponse("/")
@@ -984,12 +977,12 @@ def get_calendar_service(user_id):
 
 def parse_datetime(date_str, time_str):
     tz = pytz.timezone("Asia/Kolkata")
-    today = datetime.datetime.now(tz)
+    now = datetime.datetime.now(tz)
 
     if "today" in date_str.lower():
-        d = today.date()
+        d = now.date()
     elif "tomorrow" in date_str.lower():
-        d = today.date() + datetime.timedelta(days=1)
+        d = now.date() + datetime.timedelta(days=1)
     else:
         d = parser.parse(date_str, fuzzy=True).date()
 
@@ -999,6 +992,7 @@ def parse_datetime(date_str, time_str):
 
 def create_calendar_event(user_id, name, date_str, time_str):
     service = get_calendar_service(user_id)
+
     start = parse_datetime(date_str, time_str)
     end = start + datetime.timedelta(hours=1)
 
@@ -1010,7 +1004,11 @@ def create_calendar_event(user_id, name, date_str, time_str):
 
     result = service.events().insert(calendarId="primary", body=event).execute()
 
-    return f"✅ Event created: **Meeting with {name}** on **{start.strftime('%A, %B %d at %I:%M %p')}**\n\n🔗 [View in Google Calendar]({result['htmlLink']})"
+    return (
+        f"✅ Event created: **Meeting with {name}** on "
+        f"**{start.strftime('%A, %B %d at %I:%M %p')}**\n\n"
+        f"🔗 [View in Google Calendar]({result['htmlLink']})"
+    )
 
 # ================== CHAT ==================
 
@@ -1020,17 +1018,22 @@ def chat(user_message, history, request: gr.Request):
 
     user_id = request.session.get("user_id")
     if not user_id:
-        history.append({"role": "assistant", "content": "🔐 Please login first."})
+        history.append({
+            "role": "assistant",
+            "content": "🔐 Please login first."
+        })
         return history, ""
 
-    pending = request.session.setdefault("pending_event", {})
+    # ✅ SAFE session handling (NO setdefault)
+    if "pending_event" not in request.session or not isinstance(request.session.get("pending_event"), dict):
+        request.session["pending_event"] = {}
 
+    pending = request.session["pending_event"]
     text = user_message.lower()
 
-    # Detect intent
-    if "schedule" in text or "meeting" in text:
-        if "with" in text:
-            pending["name"] = user_message.split("with")[-1].strip()
+    # Slot filling
+    if "with" in text:
+        pending["name"] = user_message.split("with")[-1].strip()
 
     if any(x in text for x in ["today", "tomorrow"]):
         pending["date_str"] = user_message.strip()
@@ -1038,7 +1041,7 @@ def chat(user_message, history, request: gr.Request):
     if any(x in text for x in ["am", "pm"]):
         pending["time_str"] = user_message.strip()
 
-    # Ask missing info
+    # Decide response
     if "name" not in pending:
         reply = "❓ Who is the meeting with?"
     elif "date_str" not in pending:
@@ -1065,11 +1068,10 @@ def reset():
 
 with gr.Blocks(title="Voice Calendar Agent") as demo:
     gr.Markdown("# 🎙️ Voice Calendar Agent")
-
     gr.Markdown("[🔑 Login](/login) | [🚪 Logout](/logout)")
 
     chatbot = gr.Chatbot(height=450)
-    msg = gr.Textbox(placeholder="Schedule a meeting...")
+    msg = gr.Textbox(placeholder="Schedule a meeting…")
     send = gr.Button("Send")
     clear = gr.Button("Reset")
 
@@ -1084,9 +1086,10 @@ app = gr.mount_gradio_app(app, demo, path="/")
 @app.on_event("startup")
 async def startup():
     init_db()
-    print("✅ App started")
+    print("✅ Voice Calendar Agent started")
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+
 
