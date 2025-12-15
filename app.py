@@ -1394,11 +1394,18 @@ You: [NOW call create_calendar_event with all required info]"""
                 print(f"🤖 Function call: name='{name}', date='{date_str}', time='{time_str}'")
                 
                 # Collect what was mentioned in conversation after last event
-                conversation_text = " ".join([
-                    msg.get("content", "").lower() 
-                    for msg in history[max(0, len(history)-5):] 
-                    if msg.get("role") == "user"
-                ]) + " " + user_message.lower()
+                conversation_parts = []
+                for msg in history[max(0, len(history)-5):]:
+                    if isinstance(msg, dict) and msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, str):
+                            conversation_parts.append(content.lower())
+                
+                # Add current message
+                if isinstance(user_message, str):
+                    conversation_parts.append(user_message.lower())
+                
+                conversation_text = " ".join(conversation_parts)
                 
                 print(f"📝 Recent conversation: {conversation_text[:100]}...")
                 
