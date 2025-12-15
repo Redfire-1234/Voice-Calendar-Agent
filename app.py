@@ -493,6 +493,10 @@
 #     """Convert Gradio history to Groq message format."""
 #     msgs = []
     
+#     # Ensure user_message is a string
+#     if not isinstance(user_message, str):
+#         user_message = str(user_message) if user_message else ""
+    
 #     # Check if this is a NEW schedule request (without complete date/time in the message itself)
 #     is_schedule = any(word in user_message.lower() for word in ["schedule", "book", "arrange", "create", "set up", "plan"])
 #     has_date = any(word in user_message.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "next", "this", "dec", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov"])
@@ -509,6 +513,9 @@
 #         for msg in history[-6:]:  # Only last 6 messages
 #             if isinstance(msg, dict):
 #                 content = msg.get("content", "")
+#                 if not isinstance(content, str):
+#                     continue
+                    
 #                 # Skip event creation confirmations
 #                 if "✅ Event created:" in content:
 #                     continue
@@ -520,7 +527,7 @@
 #                 elif msg.get("role") == "assistant":
 #                     msgs.append({"role": "assistant", "content": content})
     
-#     if user_message and isinstance(user_message, str):
+#     if user_message:
 #         msgs.append({"role": "user", "content": user_message.strip()})
     
 #     return msgs
@@ -528,8 +535,12 @@
 
 # def chat(user_message, history, request: gr.Request):
 #     """Main chat handler with Groq function calling."""
-#     if not user_message.strip():
+#     if not user_message or (isinstance(user_message, str) and not user_message.strip()):
 #         return history, ""
+
+#     # Convert to string if needed
+#     if not isinstance(user_message, str):
+#         user_message = str(user_message)
 
 #     user_id = request.session.get("user_id")
 #     email = request.session.get("email", "")
@@ -1360,20 +1371,43 @@ You: [NOW call create_calendar_event with all required info]"""
             print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
             
             if tool_call.function.name == "create_calendar_event":
-                # VALIDATION: Check if all required fields are present
-                if not args.get("date_str") or not args.get("time_str"):
+                # DEBUG: Log what LLM extracted
+                print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
+                
+                # VALIDATION: Check if all required fields are present and NOT empty
+                date_str = args.get("date_str", "").strip()
+                time_str = args.get("time_str", "").strip()
+                
+                # Additional validation: Check if user actually provided time in their message
+                # Look at the last user message to see if they mentioned a time
+                user_mentioned_time = False
+                if history:
+                    # Get last few user messages
+                    recent_user_messages = [msg.get("content", "") for msg in history[-3:] if msg.get("role") == "user"]
+                    recent_user_messages.append(user_message)
+                    
+                    for msg_text in recent_user_messages:
+                        if isinstance(msg_text, str):
+                            # Check if any time indicators are present
+                            if any(indicator in msg_text.lower() for indicator in ["am", "pm", ":", "noon", "morning", "afternoon", "evening", "night"]):
+                                if any(char.isdigit() for char in msg_text):
+                                    user_mentioned_time = True
+                                    break
+                
+                print(f"⏰ Time validation: time_str='{time_str}', user_mentioned_time={user_mentioned_time}")
+                
+                if not date_str or not time_str:
                     assistant_reply = "❓ I need more information. Please provide:\n- **Date** (today, tomorrow, Monday, etc.)\n- **Time** (3 PM, 10 AM, etc.)\n\nExample: 'Schedule meeting with Aman tomorrow at 3 PM'"
+                elif not user_mentioned_time:
+                    # User provided date but not time
+                    assistant_reply = "❓ What time would you like to schedule this meeting?\n\nPlease specify a time (e.g., 3 PM, 10:30 AM, etc.)"
                 else:
-                    # Additional check: Make sure date_str and time_str are not empty strings
-                    if not args["date_str"].strip() or not args["time_str"].strip():
-                        assistant_reply = "❓ I need more information. Please provide:\n- **Date** (today, tomorrow, Monday, etc.)\n- **Time** (3 PM, 10 AM, etc.)\n\nExample: 'Schedule meeting with Aman tomorrow at 3 PM'"
-                    else:
-                        # Add user_id to args
-                        args["user_id"] = user_id
-                        result = create_calendar_event(**args)
-                        assistant_reply = result["message"]
-                        if result.get("link"):
-                            assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
+                    # All good - create event
+                    args["user_id"] = user_id
+                    result = create_calendar_event(**args)
+                    assistant_reply = result["message"]
+                    if result.get("link"):
+                        assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
             
             elif tool_call.function.name == "list_upcoming_events":
                 args["user_id"] = user_id
