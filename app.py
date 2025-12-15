@@ -806,7 +806,7 @@
 
 """
 Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
-Combines web OAuth flow with Groq function calling like the desktop example.
+FIXED VERSION - Resolves repeated question issue
 """
 
 import os
@@ -1293,32 +1293,36 @@ functions = [
     }
 ]
 
-# ================== CHAT HANDLER ==================
+# ================== CHAT HANDLER - FIXED VERSION ==================
 
 def format_messages_from_history(history, user_message):
-    """Convert Gradio history to Groq message format."""
+    """Convert Gradio history to Groq message format - FIXED VERSION."""
     msgs = []
     
     # Ensure user_message is a string
     if not isinstance(user_message, str):
         user_message = str(user_message) if user_message else ""
     
-    # Find the last completed event (marked by ✅)
-    last_event_index = -1
+    # Strategy: Keep ALL conversation context for ongoing scheduling
+    # Only reset after a successful event creation
+    
+    # Find the last SUCCESSFUL event creation
+    last_success_index = -1
     for i in range(len(history) - 1, -1, -1):
         if isinstance(history[i], dict):
             content = history[i].get("content", "")
             if isinstance(content, str) and "✅ Event created:" in content:
-                last_event_index = i
+                last_success_index = i
                 break
     
-    # Include messages AFTER the last completed event
-    if last_event_index >= 0:
-        relevant_history = history[last_event_index + 1:]
+    # If there was a successful event, start fresh after it
+    # Otherwise, keep ALL history (up to reasonable limit)
+    if last_success_index >= 0:
+        relevant_history = history[last_success_index + 1:]
     else:
-        relevant_history = history[-10:]  # Last 10 if no event found
+        relevant_history = history[-20:]  # Increased from 10 to 20
     
-    # Add relevant history to messages - with aggressive filtering
+    # Add relevant history - with LESS aggressive filtering
     for msg in relevant_history:
         if isinstance(msg, dict):
             content = msg.get("content", "")
@@ -1327,35 +1331,35 @@ def format_messages_from_history(history, user_message):
             
             role = msg.get("role")
             
-            # Skip problematic assistant messages
+            # Only skip ACTUAL errors, not clarification questions
             if role == "assistant":
-                # Skip these types of messages:
+                # Only skip these specific error types:
                 skip_phrases = [
-                    "I'm a calendar assistant and can only help",
-                    "I'm a calendar assistant and can only",
                     "❌ Error:",
                     "Try [logging in again]"
                 ]
                 if any(phrase in content for phrase in skip_phrases):
                     continue
             
+            # Add the message
             if role == "user":
                 msgs.append({"role": "user", "content": content})
             elif role == "assistant":
                 msgs.append({"role": "assistant", "content": content})
     
+    # Add current user message
     if user_message:
         msgs.append({"role": "user", "content": user_message.strip()})
     
     print(f"📚 Context: {len(msgs)} messages")
     for i, m in enumerate(msgs):
-        print(f"  {i+1}. {m['role']}: {m['content'][:60]}...")
+        print(f"  {i+1}. {m['role']}: {m['content'][:80]}...")
     
     return msgs
 
 
 def chat(user_message, history, request: gr.Request):
-    """Main chat handler with Groq function calling."""
+    """Main chat handler with Groq function calling - FIXED VERSION."""
     if not user_message or (isinstance(user_message, str) and not user_message.strip()):
         return history, ""
 
@@ -1376,6 +1380,7 @@ def chat(user_message, history, request: gr.Request):
     try:
         messages = format_messages_from_history(history, user_message)
         
+        # IMPROVED SYSTEM PROMPT
         messages.insert(0, {
             "role": "system",
             "content": """You are a friendly calendar assistant. You can:
@@ -1383,30 +1388,32 @@ def chat(user_message, history, request: gr.Request):
 2) List upcoming events using 'list_upcoming_events'
 3) Delete/cancel events using 'delete_calendar_event'
 
-CRITICAL RULES FOR SCHEDULING:
-- NEVER call create_calendar_event without ALL required information: name, date, and time
-- If the user does NOT provide a date (today, tomorrow, Monday, etc.), you MUST ask for it
-- If the user does NOT provide a time (3 PM, 10 AM, etc.), you MUST ask for it
-- DO NOT make assumptions or use default values
-- DO NOT guess the date or time
-- Always confirm ALL details before calling the function
+SCHEDULING RULES:
+- To create an event, you need: person/event name, date, and time
+- If ANY of these are missing, ask for them
+- Pay attention to the FULL conversation history - information might be provided across multiple messages
+- Once you have all three pieces of information from the conversation, call the function
 
-HANDLING NON-CALENDAR QUESTIONS:
-- If user says greetings (hi, hello, hey), respond warmly and ask how you can help with their calendar
-- If user says thanks/thank you, respond briefly: "You're welcome! Let me know if you need anything else with your calendar."
-- If user asks unrelated questions (weather, news, general knowledge, jokes, etc.), politely redirect: "I'm a calendar assistant and can only help with scheduling, viewing, and managing your calendar events. Is there anything calendar-related I can help you with?"
-- Keep responses SHORT and focused on calendar tasks
-- Don't try to answer questions outside of calendar management
+EXAMPLES:
+User: "Schedule meeting with Bob tomorrow at 2 PM"
+You: [Call create_calendar_event immediately - you have all info]
 
-Example:
-User: "What's the weather today?"
-You: "I'm a calendar assistant and can only help with scheduling and managing your calendar events. Is there a meeting you'd like to schedule?"
+User: "Schedule meeting with Bob"
+You: "When would you like to meet with Bob?"
+User: "Tomorrow at 2 PM"
+You: [Call create_calendar_event - you now have all info from both messages]
 
-User: "Thanks!"
-You: "You're welcome! Let me know if you need anything else with your calendar."
+User: "Schedule meeting tomorrow at 2 PM"
+You: "Who is this meeting with?"
+User: "With Sarah"
+You: [Call create_calendar_event - you now have all info]
 
-User: "Schedule meeting with Bob tomorrow at 3 PM"
-You: [NOW call create_calendar_event with all required info]"""
+HANDLING OTHER INTERACTIONS:
+- Greetings: Respond warmly and briefly
+- Thanks: "You're welcome!"
+- Non-calendar questions: "I can only help with calendar tasks. What would you like to schedule?"
+
+Keep responses SHORT and natural."""
         })
 
         response = groq_client.chat.completions.create(
@@ -1430,52 +1437,25 @@ You: [NOW call create_calendar_event with all required info]"""
             else:
                 args = dict(tool_call.function.arguments)
             
-            # DEBUG: Print what Groq extracted
             print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
             
             if tool_call.function.name == "create_calendar_event":
-                # Get arguments
+                # SIMPLIFIED VALIDATION - trust the LLM more
                 date_str = args.get("date_str", "").strip()
                 time_str = args.get("time_str", "").strip()
                 name = args.get("name", "").strip()
                 
                 print(f"🤖 Function call: name='{name}', date='{date_str}', time='{time_str}'")
                 
-                # Collect what was mentioned in conversation after last event
-                conversation_parts = []
-                for msg in history[max(0, len(history)-5):]:
-                    if isinstance(msg, dict) and msg.get("role") == "user":
-                        content = msg.get("content", "")
-                        if isinstance(content, str):
-                            conversation_parts.append(content.lower())
-                
-                # Add current message
-                if isinstance(user_message, str):
-                    conversation_parts.append(user_message.lower())
-                
-                conversation_text = " ".join(conversation_parts)
-                
-                print(f"📝 Recent conversation: {conversation_text[:100]}...")
-                
-                # Check what's actually in the conversation
-                has_time_mention = any(t in conversation_text for t in ["am", "pm", "noon"]) and any(c.isdigit() for c in conversation_text)
-                has_date_mention = any(d in conversation_text for d in ["today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"])
-                
-                print(f"✅ Validation: time mentioned={has_time_mention}, date mentioned={has_date_mention}")
-                
-                # Validate
+                # Only validate that we have the strings, don't second-guess the LLM
                 if not name or not date_str or not time_str:
                     missing = []
                     if not name: missing.append("person/event name")
                     if not date_str: missing.append("date")
                     if not time_str: missing.append("time")
-                    assistant_reply = f"❓ I still need: {', '.join(missing)}"
-                elif not has_date_mention:
-                    assistant_reply = "❓ What date would you like for this meeting?"
-                elif not has_time_mention:
-                    assistant_reply = "❓ What time would you like for this meeting?"
+                    assistant_reply = f"I need to know: {', '.join(missing)}"
                 else:
-                    # All validations passed - create event!
+                    # Create the event!
                     args["user_id"] = user_id
                     result = create_calendar_event(**args)
                     assistant_reply = result["message"]
