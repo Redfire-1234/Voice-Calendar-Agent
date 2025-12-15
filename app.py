@@ -1386,59 +1386,41 @@ You: [NOW call create_calendar_event with all required info]"""
             print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
             
             if tool_call.function.name == "create_calendar_event":
-                # DEBUG: Log what LLM extracted
-                print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
-                
-                # VALIDATION: Check if all required fields are present and NOT empty
+                # Get arguments
                 date_str = args.get("date_str", "").strip()
                 time_str = args.get("time_str", "").strip()
+                name = args.get("name", "").strip()
                 
-                # Additional validation: Check if user actually provided time
-                # Look through recent conversation to see if time was mentioned
-                user_mentioned_time = False
-                user_mentioned_date = False
+                print(f"🤖 Function call: name='{name}', date='{date_str}', time='{time_str}'")
                 
-                if history:
-                    # Get messages after last event creation
-                    relevant_msgs = []
-                    for i in range(len(history) - 1, -1, -1):
-                        msg = history[i]
-                        if isinstance(msg, dict):
-                            content = msg.get("content", "")
-                            if isinstance(content, str):
-                                if "✅ Event created:" in content:
-                                    break
-                                if msg.get("role") == "user":
-                                    relevant_msgs.insert(0, content)
-                    
-                    # Add current message
-                    relevant_msgs.append(user_message)
-                    
-                    # Check all relevant messages
-                    for msg_text in relevant_msgs:
-                        # Check for time
-                        if any(indicator in msg_text.lower() for indicator in ["am", "pm", "noon"]):
-                            if any(char.isdigit() for char in msg_text):
-                                user_mentioned_time = True
-                        
-                        # Check for date
-                        if any(day in msg_text.lower() for day in ["today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
-                            user_mentioned_date = True
+                # Collect what was mentioned in conversation after last event
+                conversation_text = " ".join([
+                    msg.get("content", "").lower() 
+                    for msg in history[max(0, len(history)-5):] 
+                    if msg.get("role") == "user"
+                ]) + " " + user_message.lower()
                 
-                print(f"⏰ Validation: date='{date_str}' (mentioned:{user_mentioned_date}), time='{time_str}' (mentioned:{user_mentioned_time})")
+                print(f"📝 Recent conversation: {conversation_text[:100]}...")
                 
-                if not date_str or not time_str:
-                    assistant_reply = "❓ I need more information to schedule this meeting:\n"
-                    if not date_str:
-                        assistant_reply += "- **Date** (today, tomorrow, Monday, etc.)\n"
-                    if not time_str:
-                        assistant_reply += "- **Time** (3 PM, 10 AM, etc.)\n"
-                elif not user_mentioned_date:
-                    assistant_reply = "❓ What date would you like to schedule this meeting?\n\n(e.g., today, tomorrow, Monday, etc.)"
-                elif not user_mentioned_time:
-                    assistant_reply = "❓ What time would you like to schedule this meeting?\n\n(e.g., 3 PM, 10:30 AM, etc.)"
+                # Check what's actually in the conversation
+                has_time_mention = any(t in conversation_text for t in ["am", "pm", "noon"]) and any(c.isdigit() for c in conversation_text)
+                has_date_mention = any(d in conversation_text for d in ["today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"])
+                
+                print(f"✅ Validation: time mentioned={has_time_mention}, date mentioned={has_date_mention}")
+                
+                # Validate
+                if not name or not date_str or not time_str:
+                    missing = []
+                    if not name: missing.append("person/event name")
+                    if not date_str: missing.append("date")
+                    if not time_str: missing.append("time")
+                    assistant_reply = f"❓ I still need: {', '.join(missing)}"
+                elif not has_date_mention:
+                    assistant_reply = "❓ What date would you like for this meeting?"
+                elif not has_time_mention:
+                    assistant_reply = "❓ What time would you like for this meeting?"
                 else:
-                    # All good - create event
+                    # All validations passed - create event!
                     args["user_id"] = user_id
                     result = create_calendar_event(**args)
                     assistant_reply = result["message"]
