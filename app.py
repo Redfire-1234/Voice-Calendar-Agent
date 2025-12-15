@@ -806,7 +806,7 @@
 
 """
 Voice Calendar Agent - OAuth 2.0 with Function Calling (Render Deployment)
-FIXED VERSION - Resolves repeated question issue
+OPTIMIZED VERSION - Clear context management and concise responses
 """
 
 import os
@@ -1011,25 +1011,24 @@ def get_calendar_service(user_id):
 
 def parse_datetime(date_str, time_str):
     """Parse date and time strings into datetime object in India timezone."""
-    # Use India timezone
     india_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.datetime.now(india_tz)
     
     # Parse date
-    if "tomorrow" in date_str.lower():
+    date_str_lower = date_str.lower()
+    if "tomorrow" in date_str_lower:
         target_date = today.date() + datetime.timedelta(days=1)
-    elif "today" in date_str.lower():
+    elif "today" in date_str_lower:
         target_date = today.date()
     else:
         try:
-            parsed = parser.parse(date_str, fuzzy=True)
+            parsed = parser.parse(date_str, fuzzy=True, dayfirst=True)
             target_date = parsed.date()
         except Exception:
-            target_date = today.date() + datetime.timedelta(days=1)
+            target_date = today.date()
     
-    # Parse time - IMPORTANT: parse time independently
+    # Parse time
     try:
-        # Parse time string independently to avoid date interference
         time_parsed = parser.parse(time_str, fuzzy=True)
         hour = time_parsed.hour
         minute = time_parsed.minute
@@ -1052,11 +1051,9 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         if not title:
             title = f"Meeting with {name}"
 
-        # Parse the datetime (already in India timezone from parse_datetime)
         start_aware = parse_datetime(date_str, time_str)
         end_aware = start_aware + datetime.timedelta(hours=1)
         
-        # Timezone is already set to Asia/Kolkata
         tz_name = "Asia/Kolkata"
         
         print(f"🌍 Using timezone: {tz_name}")
@@ -1084,7 +1081,7 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
 
         return {
             "success": True,
-            "message": f"✅ Event created: **{title}** on **{start_aware.strftime('%A, %B %d at %I:%M %p')}** (India Time)",
+            "message": f"✅ **{title}** scheduled for **{start_aware.strftime('%b %d at %I:%M %p')}**",
             "link": result.get("htmlLink", ""),
             "event_id": result['id']
         }
@@ -1093,7 +1090,7 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         print(f"❌ Event creation error: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "message": f"❌ Error creating event: {e}"}
+        return {"success": False, "message": f"❌ Error: {e}"}
 
 
 def list_upcoming_events(user_id, max_results=10):
@@ -1101,7 +1098,6 @@ def list_upcoming_events(user_id, max_results=10):
     try:
         service = get_calendar_service(user_id)
         
-        # Get current time in India timezone
         india_tz = pytz.timezone('Asia/Kolkata')
         now = datetime.datetime.now(india_tz).isoformat()
         
@@ -1118,7 +1114,7 @@ def list_upcoming_events(user_id, max_results=10):
         if not events:
             return {
                 "success": True,
-                "message": "📅 No upcoming events found.",
+                "message": "📅 No upcoming events.",
                 "events": []
             }
         
@@ -1131,12 +1127,11 @@ def list_upcoming_events(user_id, max_results=10):
                 "start": start
             })
         
-        # Format message
-        msg = "📅 **Your upcoming events:**\n\n"
+        msg = "📅 **Upcoming events:**\n\n"
         for i, evt in enumerate(event_list, 1):
             try:
                 dt = parser.parse(evt['start'])
-                time_str = dt.strftime('%A, %B %d at %I:%M %p')
+                time_str = dt.strftime('%b %d at %I:%M %p')
             except:
                 time_str = evt['start']
             msg += f"{i}. **{evt['summary']}** - {time_str}\n"
@@ -1149,7 +1144,7 @@ def list_upcoming_events(user_id, max_results=10):
         
     except Exception as e:
         print(f"❌ List events error: {e}")
-        return {"success": False, "message": f"❌ Error listing events: {e}", "events": []}
+        return {"success": False, "message": f"❌ Error: {e}", "events": []}
 
 
 def delete_calendar_event(user_id, name=None, date_str=None):
@@ -1157,18 +1152,14 @@ def delete_calendar_event(user_id, name=None, date_str=None):
     try:
         service = get_calendar_service(user_id)
         
-        # Get upcoming events
         result = list_upcoming_events(user_id, max_results=50)
         if not result["success"] or not result["events"]:
             return {"success": False, "message": "❌ No upcoming events to delete."}
         
         events = result["events"]
-        
-        # Find matching event
         event_to_delete = None
         
         if name:
-            # Search by name (case-insensitive, partial match)
             name_lower = name.lower()
             for evt in events:
                 if name_lower in evt["summary"].lower():
@@ -1176,7 +1167,6 @@ def delete_calendar_event(user_id, name=None, date_str=None):
                     break
         
         if not event_to_delete and date_str:
-            # Search by date
             target_date = None
             today = datetime.datetime.now(pytz.timezone('Asia/Kolkata'))
             
@@ -1204,10 +1194,9 @@ def delete_calendar_event(user_id, name=None, date_str=None):
         if not event_to_delete:
             return {
                 "success": False,
-                "message": f"❌ Could not find event matching '{name or date_str}'. Try listing your events first."
+                "message": f"❌ Couldn't find event matching '{name or date_str}'."
             }
         
-        # Delete the event
         service.events().delete(
             calendarId='primary',
             eventId=event_to_delete['id']
@@ -1217,7 +1206,7 @@ def delete_calendar_event(user_id, name=None, date_str=None):
         
         try:
             dt = parser.parse(event_to_delete['start'])
-            time_str = dt.strftime('%A, %B %d at %I:%M %p')
+            time_str = dt.strftime('%b %d at %I:%M %p')
         except:
             time_str = event_to_delete['start']
         
@@ -1230,7 +1219,7 @@ def delete_calendar_event(user_id, name=None, date_str=None):
         print(f"❌ Delete event error: {e}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "message": f"❌ Error deleting event: {e}"}
+        return {"success": False, "message": f"❌ Error: {e}"}
 
 # ================== GROQ FUNCTION DEFINITION ==================
 
@@ -1247,11 +1236,11 @@ functions = [
                 },
                 "date_str": {
                     "type": "string", 
-                    "description": "The date (e.g., 'tomorrow', 'Friday', 'Dec 15')"
+                    "description": "The date (e.g., 'tomorrow', 'today', '16 Dec', '16/12', 'Friday')"
                 },
                 "time_str": {
                     "type": "string", 
-                    "description": "The time (e.g., '3 PM', '10:30 AM', '14:00')"
+                    "description": "The time (e.g., '3 PM', '5 o'clock', '10:30 AM', '14:00')"
                 },
                 "title": {
                     "type": "string", 
@@ -1263,7 +1252,7 @@ functions = [
     },
     {
         "name": "list_upcoming_events",
-        "description": "List the user's upcoming calendar events. Use when user asks to see their schedule or upcoming meetings.",
+        "description": "List the user's upcoming calendar events.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1276,53 +1265,50 @@ functions = [
     },
     {
         "name": "delete_calendar_event",
-        "description": "Delete/cancel a calendar event. Use when user wants to cancel or delete a meeting.",
+        "description": "Delete/cancel a calendar event.",
         "parameters": {
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "The person's name or event name to delete (e.g., 'Bob', 'Team Meeting')"
+                    "description": "The person's name or event name to delete"
                 },
                 "date_str": {
                     "type": "string",
-                    "description": "The date of the event to delete (e.g., 'tomorrow', 'Friday')"
+                    "description": "The date of the event to delete"
                 }
             }
         }
     }
 ]
 
-# ================== CHAT HANDLER - FIXED VERSION ==================
+# ================== CHAT HANDLER - OPTIMIZED VERSION ==================
 
 def format_messages_from_history(history, user_message):
-    """Convert Gradio history to Groq message format - FIXED VERSION."""
+    """Convert Gradio history to Groq message format - OPTIMIZED."""
     msgs = []
     
-    # Ensure user_message is a string
     if not isinstance(user_message, str):
         user_message = str(user_message) if user_message else ""
     
-    # Strategy: Keep ALL conversation context for ongoing scheduling
-    # Only reset after a successful event creation
-    
-    # Find the last SUCCESSFUL event creation
+    # CRITICAL: Reset context after EACH successful event creation
+    # This ensures we focus ONLY on the current event being created
     last_success_index = -1
     for i in range(len(history) - 1, -1, -1):
         if isinstance(history[i], dict):
             content = history[i].get("content", "")
-            if isinstance(content, str) and "✅ Event created:" in content:
+            if isinstance(content, str) and "✅" in content and "scheduled" in content:
                 last_success_index = i
                 break
     
-    # If there was a successful event, start fresh after it
-    # Otherwise, keep ALL history (up to reasonable limit)
+    # Keep only messages AFTER last successful event
     if last_success_index >= 0:
         relevant_history = history[last_success_index + 1:]
     else:
-        relevant_history = history[-20:]  # Increased from 10 to 20
+        # No event yet - keep last 10 messages
+        relevant_history = history[-10:]
     
-    # Add relevant history - with LESS aggressive filtering
+    # Add messages to context
     for msg in relevant_history:
         if isinstance(msg, dict):
             content = msg.get("content", "")
@@ -1331,27 +1317,18 @@ def format_messages_from_history(history, user_message):
             
             role = msg.get("role")
             
-            # Only skip ACTUAL errors, not clarification questions
-            if role == "assistant":
-                # Only skip these specific error types:
-                skip_phrases = [
-                    "❌ Error:",
-                    "Try [logging in again]"
-                ]
-                if any(phrase in content for phrase in skip_phrases):
-                    continue
+            # Skip login errors only
+            if role == "assistant" and "Please login first" in content:
+                continue
             
-            # Add the message
-            if role == "user":
-                msgs.append({"role": "user", "content": content})
-            elif role == "assistant":
-                msgs.append({"role": "assistant", "content": content})
+            if role in ["user", "assistant"]:
+                msgs.append({"role": role, "content": content})
     
-    # Add current user message
+    # Add current message
     if user_message:
         msgs.append({"role": "user", "content": user_message.strip()})
     
-    print(f"📚 Context: {len(msgs)} messages")
+    print(f"📚 Context: {len(msgs)} messages (reset after last event)")
     for i, m in enumerate(msgs):
         print(f"  {i+1}. {m['role']}: {m['content'][:80]}...")
     
@@ -1359,61 +1336,68 @@ def format_messages_from_history(history, user_message):
 
 
 def chat(user_message, history, request: gr.Request):
-    """Main chat handler with Groq function calling - FIXED VERSION."""
+    """Main chat handler - OPTIMIZED for concise responses."""
     if not user_message or (isinstance(user_message, str) and not user_message.strip()):
         return history, ""
 
-    # Convert to string if needed
     if not isinstance(user_message, str):
         user_message = str(user_message)
 
     user_id = request.session.get("user_id")
-    email = request.session.get("email", "")
 
     if not user_id:
         history.append({
             "role": "assistant",
-            "content": "🔐 **Please login first!**\n\nClick **[Login with Google](/login)** above."
+            "content": "🔐 Please login first: [Login with Google](/login)"
         })
         return history, ""
 
     try:
         messages = format_messages_from_history(history, user_message)
         
-        # IMPROVED SYSTEM PROMPT
+        # OPTIMIZED SYSTEM PROMPT - Clear and concise
         messages.insert(0, {
             "role": "system",
-            "content": """You are a friendly calendar assistant. You can:
-1) Schedule events using 'create_calendar_event'
-2) List upcoming events using 'list_upcoming_events'
-3) Delete/cancel events using 'delete_calendar_event'
+            "content": """You are a calendar assistant. Keep responses SHORT (1-2 sentences max).
 
-SCHEDULING RULES:
-- To create an event, you need: person/event name, date, and time
-- If ANY of these are missing, ask for them
-- Pay attention to the FULL conversation history - information might be provided across multiple messages
-- Once you have all three pieces of information from the conversation, call the function
+YOUR TASKS:
+1. Schedule events (need: name/event, date, time)
+2. List upcoming events
+3. Delete events
+
+RESPONSE RULES:
+- Greetings → "Hi! What would you like me to schedule?"
+- Thanks → "You're welcome!"
+- Missing info → Ask for ONE missing thing at a time
+- All info present → Call function immediately
+- Non-calendar questions → "I only help with calendar events."
+
+CRITICAL - CONTEXT RESET:
+- After EACH event is created, forget all previous event details
+- Focus ONLY on the current event being scheduled
+- Don't mix information from previous events
+
+DATE/TIME FORMATS ACCEPTED:
+- Dates: "today", "tomorrow", "16 Dec", "16/12", "Friday"
+- Times: "5 PM", "5 o'clock", "17:00", "5:30 PM"
 
 EXAMPLES:
-User: "Schedule meeting with Bob tomorrow at 2 PM"
-You: [Call create_calendar_event immediately - you have all info]
+User: "Hi"
+You: "Hi! What would you like me to schedule?"
 
 User: "Schedule meeting with Bob"
-You: "When would you like to meet with Bob?"
-User: "Tomorrow at 2 PM"
-You: [Call create_calendar_event - you now have all info from both messages]
+You: "When? (date and time)"
 
-User: "Schedule meeting tomorrow at 2 PM"
-You: "Who is this meeting with?"
-User: "With Sarah"
-You: [Call create_calendar_event - you now have all info]
+User: "Tomorrow at 5 PM"
+You: [Call function - you have all info]
 
-HANDLING OTHER INTERACTIONS:
-- Greetings: Respond warmly and briefly
-- Thanks: "You're welcome!"
-- Non-calendar questions: "I can only help with calendar tasks. What would you like to schedule?"
+User: "Thanks"
+You: "You're welcome!"
 
-Keep responses SHORT and natural."""
+User: "Schedule another meeting"
+You: "Who's this meeting with?"
+
+KEEP IT SHORT. No long explanations."""
         })
 
         response = groq_client.chat.completions.create(
@@ -1421,46 +1405,40 @@ Keep responses SHORT and natural."""
             messages=messages,
             tools=[{"type": "function", "function": fn} for fn in functions],
             tool_choice="auto",
-            max_tokens=512,
-            temperature=0.7
+            max_tokens=256,  # Reduced for shorter responses
+            temperature=0.5  # Lower temperature for more consistent responses
         )
 
         msg = response.choices[0].message
 
-        # Check if function was called
         if msg.tool_calls:
             tool_call = msg.tool_calls[0]
             
-            # Parse function arguments
             if isinstance(tool_call.function.arguments, str):
                 args = json.loads(tool_call.function.arguments)
             else:
                 args = dict(tool_call.function.arguments)
             
-            print(f"🤖 Groq extracted arguments: {json.dumps(args, indent=2)}")
+            print(f"🤖 Function: {tool_call.function.name}")
+            print(f"🤖 Args: {json.dumps(args, indent=2)}")
             
             if tool_call.function.name == "create_calendar_event":
-                # SIMPLIFIED VALIDATION - trust the LLM more
                 date_str = args.get("date_str", "").strip()
                 time_str = args.get("time_str", "").strip()
                 name = args.get("name", "").strip()
                 
-                print(f"🤖 Function call: name='{name}', date='{date_str}', time='{time_str}'")
-                
-                # Only validate that we have the strings, don't second-guess the LLM
                 if not name or not date_str or not time_str:
                     missing = []
-                    if not name: missing.append("person/event name")
+                    if not name: missing.append("name/event")
                     if not date_str: missing.append("date")
                     if not time_str: missing.append("time")
-                    assistant_reply = f"I need to know: {', '.join(missing)}"
+                    assistant_reply = f"Need: {', '.join(missing)}"
                 else:
-                    # Create the event!
                     args["user_id"] = user_id
                     result = create_calendar_event(**args)
                     assistant_reply = result["message"]
                     if result.get("link"):
-                        assistant_reply += f"\n\n🔗 [View in Google Calendar]({result['link']})"
+                        assistant_reply += f"\n🔗 [View]({result['link']})"
             
             elif tool_call.function.name == "list_upcoming_events":
                 args["user_id"] = user_id
@@ -1473,9 +1451,8 @@ Keep responses SHORT and natural."""
                 assistant_reply = result["message"]
             
             else:
-                assistant_reply = f"❌ Unknown function: {tool_call.function.name}"
+                assistant_reply = f"❌ Unknown function"
         else:
-            # No function call - just chat response
             assistant_reply = msg.content
 
         history.append({"role": "user", "content": user_message})
@@ -1487,7 +1464,7 @@ Keep responses SHORT and natural."""
         import traceback
         traceback.print_exc()
         
-        error_msg = f"❌ Error: {str(e)}\n\nTry [logging in again](/login) if the problem persists."
+        error_msg = f"❌ Error: {str(e)}"
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": error_msg})
         return history, ""
@@ -1522,7 +1499,7 @@ def transcribe_audio(audio_path):
 
 with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🎙️ Voice Calendar Agent")
-    gr.Markdown("**AI-powered calendar scheduling with natural language**")
+    gr.Markdown("**AI-powered calendar scheduling**")
     
     with gr.Row():
         gr.Markdown("[🔑 Login with Google](/login)")
@@ -1552,14 +1529,13 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     
     clear = gr.Button("Reset Conversation", variant="secondary")
 
-    gr.Markdown("### 💡 Try saying:")
+    gr.Markdown("### 💡 Examples:")
     gr.Examples(
         examples=[
-            "Schedule a meeting with Bob tomorrow at 2 PM",
-            "Book a call with Sarah on Friday at 10:30 AM",
-            "Show me my upcoming meetings",
-            "Cancel my meeting with Bob",
-            "Delete tomorrow's meeting"
+            "Schedule meeting with Bob tomorrow at 2 PM",
+            "Book call with Sarah on 16 Dec at 5 o'clock",
+            "Show my upcoming meetings",
+            "Cancel meeting with Bob",
         ],
         inputs=msg
     )
@@ -1568,10 +1544,7 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     msg.submit(chat, [msg, chatbot], [chatbot, msg])
     clear.click(reset_conversation, None, [chatbot, msg])
     
-    # Voice input - transcribe and fill textbox
     voice_btn.change(transcribe_audio, voice_btn, msg)
-    
-    # Record again button - clears the audio widget
     record_again.click(lambda: None, None, voice_btn)
 
 app = gr.mount_gradio_app(app, demo, path="/")
