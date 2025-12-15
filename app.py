@@ -879,13 +879,11 @@ def logout(request: Request):
 # ================== CALENDAR SERVICE ==================
 
 def get_calendar_service(user_id):
-    """Get authenticated calendar service for user."""
     creds = load_tokens(user_id)
     if not creds:
         raise Exception("User not authenticated. Please login.")
 
     if creds.expired and creds.refresh_token:
-        print(f"🔄 Refreshing token for user {user_id}")
         creds.refresh(GoogleRequest())
         with get_db() as conn:
             with conn.cursor() as cur:
@@ -901,11 +899,9 @@ def get_calendar_service(user_id):
 # ================== CALENDAR FUNCTIONS ==================
 
 def parse_datetime(date_str, time_str):
-    """Parse date and time strings into datetime object in India timezone."""
     india_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.datetime.now(india_tz)
     
-    # Parse date
     date_str_lower = date_str.lower()
     if "tomorrow" in date_str_lower:
         target_date = today.date() + datetime.timedelta(days=1)
@@ -913,53 +909,39 @@ def parse_datetime(date_str, time_str):
         target_date = today.date()
     else:
         try:
-            parsed = parser.parse(date_str, fuzzy=True, dayfirst=True)
+            parsed = parser.parse(date_str, fuzzy=True)
             target_date = parsed.date()
         except Exception:
             target_date = today.date()
     
-    # Parse time
     try:
         time_parsed = parser.parse(time_str, fuzzy=True)
         hour = time_parsed.hour
         minute = time_parsed.minute
-    except Exception as e:
-        print(f"⚠️ Time parse error for '{time_str}': {e}")
+    except Exception:
         hour = 9
         minute = 0
     
-    # Combine date and time in India timezone
     naive_dt = datetime.datetime.combine(target_date, datetime.time(hour=hour, minute=minute))
     result = india_tz.localize(naive_dt)
-    
-    print(f"📅 Parsed: date_str='{date_str}', time_str='{time_str}' → {result} (India Time)")
     return result
 
 
 def create_calendar_event(user_id, name, date_str, time_str, title=None):
-    """Create calendar event."""
     try:
         if not title:
             title = f"Meeting with {name}"
 
         start_aware = parse_datetime(date_str, time_str)
         end_aware = start_aware + datetime.timedelta(hours=1)
-        
-        tz_name = "Asia/Kolkata"
 
         service = get_calendar_service(user_id)
 
         event = {
             "summary": title,
-            "start": {
-                "dateTime": start_aware.isoformat(),
-                "timeZone": tz_name
-            },
-            "end": {
-                "dateTime": end_aware.isoformat(),
-                "timeZone": tz_name
-            },
-            "description": f"Created by Calendar Agent"
+            "start": {"dateTime": start_aware.isoformat(), "timeZone": "Asia/Kolkata"},
+            "end": {"dateTime": end_aware.isoformat(), "timeZone": "Asia/Kolkata"},
+            "description": "Created by Calendar Agent"
         }
 
         result = service.events().insert(calendarId="primary", body=event).execute()
@@ -969,133 +951,84 @@ def create_calendar_event(user_id, name, date_str, time_str, title=None):
         return {
             "success": True,
             "message": f"✅ **{title}** scheduled for **{start_aware.strftime('%b %d at %I:%M %p')}**",
-            "link": result.get("htmlLink", ""),
-            "event_id": result['id']
+            "link": result.get("htmlLink", "")
         }
 
     except Exception as e:
         print(f"❌ Event creation error: {e}")
-        import traceback
-        traceback.print_exc()
         return {"success": False, "message": f"❌ Error: {e}"}
 
 # ================== SLOT FILLING STATE MACHINE ==================
 
 class SlotFillingStateMachine:
-    """
-    State machine for slot-filling dialogue.
-    Maintains slots: name, date, time
-    """
-    
     def __init__(self):
-        self.slots = {
-            "name": None,
-            "date": None,
-            "time": None
-        }
-        self.state = "INIT"  # INIT, COLLECTING, READY
-    
-    def reset(self):
-        """Reset all slots and state."""
         self.slots = {"name": None, "date": None, "time": None}
-        self.state = "INIT"
-        print("🔄 State machine reset")
     
     def update_slot(self, slot_name: str, value: str):
-        """Update a specific slot."""
         if slot_name in self.slots:
             self.slots[slot_name] = value
             print(f"✅ Slot updated: {slot_name} = {value}")
     
     def get_slot(self, slot_name: str):
-        """Get value of a specific slot."""
         return self.slots.get(slot_name)
     
     def all_slots_filled(self) -> bool:
-        """Check if all slots are filled."""
         return all(self.slots.values())
     
     def get_missing_slots(self) -> list:
-        """Get list of missing slot names."""
         return [k for k, v in self.slots.items() if not v]
     
     def to_dict(self) -> dict:
-        """Serialize to dictionary for session storage."""
-        return {
-            "slots": self.slots,
-            "state": self.state
-        }
+        return {"slots": self.slots}
     
     @classmethod
     def from_dict(cls, data: dict):
-        """Deserialize from dictionary."""
         machine = cls()
         machine.slots = data.get("slots", {"name": None, "date": None, "time": None})
-        machine.state = data.get("state", "INIT")
         return machine
 
 # ================== SLOT EXTRACTORS ==================
 
 def extract_name_slot(text: str) -> Optional[str]:
-    """Extract person/event name using multiple patterns."""
     text = text.lower().strip()
     
-    # Pattern 1: "with NAME"
     match = re.search(r'with\s+(\w+)', text)
     if match:
         name = match.group(1)
-        if name not in ["today", "tomorrow", "at", "on", "the", "a"]:
+        if name not in ["today", "tomorrow", "at", "on"]:
             return name.capitalize()
     
-    # Pattern 2: "meeting NAME" or "schedule NAME"
     match = re.search(r'(?:meeting|schedule)\s+(?:with\s+)?(\w+)', text)
     if match:
         name = match.group(1)
-        if name not in ["today", "tomorrow", "at", "on", "the", "a", "meeting"]:
+        if name not in ["today", "tomorrow", "at", "meeting"]:
             return name.capitalize()
     
-    # Pattern 3: Just a name by itself (if it's a single word response)
     words = text.split()
     if len(words) == 1 and len(words[0]) > 2:
-        if words[0] not in ["today", "tomorrow", "yes", "no", "ok", "sure"]:
+        if words[0] not in ["today", "tomorrow", "yes", "no", "ok"]:
             return words[0].capitalize()
     
     return None
 
 
 def extract_date_slot(text: str) -> Optional[str]:
-    """Extract date using multiple patterns."""
     text = text.lower().strip()
     
-    # Pattern 1: today/tomorrow
     if "today" in text:
         return "today"
     if "tomorrow" in text:
         return "tomorrow"
     
-    # Pattern 2: day names
     days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
     for day in days:
         if day in text:
             return day
     
-    # Pattern 3: Date formats (16 dec, 16/12, dec 16)
-    date_patterns = [
-        r'\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*',
-        r'(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+\d{1,2}',
-        r'\d{1,2}/\d{1,2}',
-        r'\d{1,2}-\d{1,2}'
-    ]
-    for pattern in date_patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group()
-    
     return None
 
 
 def extract_time_slot(text: str) -> Optional[str]:
-    """Extract time using multiple patterns."""
     text = text.lower().strip()
     
     time_patterns = [
@@ -1108,10 +1041,8 @@ def extract_time_slot(text: str) -> Optional[str]:
         match = re.search(pattern, text)
         if match:
             time_str = match.group()
-            # Normalize "o'clock" format
             if "clock" in time_str:
                 hour = re.search(r'\d{1,2}', time_str).group()
-                # Assume PM for common meeting hours (unless specified)
                 time_str = f"{hour} PM"
             return time_str
     
@@ -1120,7 +1051,6 @@ def extract_time_slot(text: str) -> Optional[str]:
 # ================== DIALOGUE MANAGER ==================
 
 def generate_prompt(state_machine: SlotFillingStateMachine) -> str:
-    """Generate appropriate prompt based on missing slots."""
     missing = state_machine.get_missing_slots()
     
     if not missing:
@@ -1133,10 +1063,9 @@ def generate_prompt(state_machine: SlotFillingStateMachine) -> str:
             return "Who would you like to meet with, and on what date?"
         elif "name" in missing and "time" in missing:
             return "Who would you like to meet with, and at what time?"
-        elif "date" in missing and "time" in missing:
+        else:
             return "When? (date and time)"
     else:
-        # Only one missing
         slot_prompts = {
             "name": "Who would you like to meet with?",
             "date": "What date?",
@@ -1147,55 +1076,38 @@ def generate_prompt(state_machine: SlotFillingStateMachine) -> str:
 # ================== CHAT HANDLER ==================
 
 def chat(user_message, history, request: gr.Request):
-    """Main chat handler using Slot-Filling State Machine."""
-    if not user_message or (isinstance(user_message, str) and not user_message.strip()):
+    if not user_message or not isinstance(user_message, str) or not user_message.strip():
         return history, ""
-
-    if not isinstance(user_message, str):
-        user_message = str(user_message)
 
     user_id = request.session.get("user_id")
 
     if not user_id:
-        history.append({
-            "role": "assistant",
-            "content": "🔐 Please login first: [Login with Google](/login)"
-        })
+        history.append({"role": "assistant", "content": "🔐 Please login: [Login with Google](/login)"})
         return history, ""
 
     try:
         user_lower = user_message.lower().strip()
         
-        # Handle greetings
-        if user_lower in ["hi", "hello", "hey", "hello!", "hi!"]:
+        if user_lower in ["hi", "hello", "hey"]:
             history.append({"role": "user", "content": user_message})
-            history.append({"role": "assistant", "content": "Hi! What would you like me to schedule?"})
+            history.append({"role": "assistant", "content": "Hi! What would you like to schedule?"})
             return history, ""
         
-        # Handle thanks - reset state machine
-        if any(word in user_lower for word in ["thanks", "thank you", "thankyou", "thx"]):
+        if any(word in user_lower for word in ["thanks", "thank you"]):
             request.session.pop("state_machine", None)
             history.append({"role": "user", "content": user_message})
             history.append({"role": "assistant", "content": "You're welcome!"})
             return history, ""
         
-        # Load or create state machine
         state_data = request.session.get("state_machine")
-        if state_data:
-            state_machine = SlotFillingStateMachine.from_dict(state_data)
-            print(f"📊 Loaded state: {state_machine.slots}")
-        else:
-            state_machine = SlotFillingStateMachine()
-            print("🆕 New state machine created")
+        state_machine = SlotFillingStateMachine.from_dict(state_data) if state_data else SlotFillingStateMachine()
         
-        # Extract slots from current message
         name = extract_name_slot(user_message)
         date = extract_date_slot(user_message)
         time = extract_time_slot(user_message)
         
         print(f"🔍 Extracted: name={name}, date={date}, time={time}")
         
-        # Update slots (only if not already filled)
         if name and not state_machine.get_slot("name"):
             state_machine.update_slot("name", name)
         if date and not state_machine.get_slot("date"):
@@ -1203,15 +1115,9 @@ def chat(user_message, history, request: gr.Request):
         if time and not state_machine.get_slot("time"):
             state_machine.update_slot("time", time)
         
-        # Save state to session
         request.session["state_machine"] = state_machine.to_dict()
         
-        print(f"💾 State after update: {state_machine.slots}")
-        
-        # Check if all slots are filled
         if state_machine.all_slots_filled():
-            print("✅ All slots filled! Creating event...")
-            
             result = create_calendar_event(
                 user_id=user_id,
                 name=state_machine.get_slot("name"),
@@ -1219,7 +1125,6 @@ def chat(user_message, history, request: gr.Request):
                 time_str=state_machine.get_slot("time")
             )
             
-            # Reset state machine after successful creation
             request.session.pop("state_machine", None)
             
             assistant_reply = result["message"]
@@ -1230,7 +1135,6 @@ def chat(user_message, history, request: gr.Request):
             history.append({"role": "assistant", "content": assistant_reply})
             return history, ""
         
-        # Generate prompt for missing slots
         prompt = generate_prompt(state_machine)
         
         history.append({"role": "user", "content": user_message})
@@ -1238,30 +1142,21 @@ def chat(user_message, history, request: gr.Request):
         return history, ""
 
     except Exception as e:
-        print(f"❌ Chat error: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Clear state on error
+        print(f"❌ Error: {e}")
         request.session.pop("state_machine", None)
-        
-        error_msg = f"❌ Error: {str(e)}"
         history.append({"role": "user", "content": user_message})
-        history.append({"role": "assistant", "content": error_msg})
+        history.append({"role": "assistant", "content": f"❌ Error: {str(e)}"})
         return history, ""
 
 
 def reset_conversation(request: gr.Request):
-    """Reset chat history and state machine."""
     request.session.pop("state_machine", None)
     return [], ""
 
 
 def transcribe_audio(audio_path):
-    """Convert voice to text using Groq Whisper."""
     if not audio_path:
         return ""
-    
     try:
         with open(audio_path, "rb") as file:
             transcription = groq_client.audio.transcriptions.create(
@@ -1269,10 +1164,7 @@ def transcribe_audio(audio_path):
                 model="whisper-large-v3-turbo",
                 response_format="text"
             )
-        
-        print(f"🎤 Transcribed: {transcription}")
         return transcription
-    
     except Exception as e:
         print(f"❌ Transcription error: {e}")
         return ""
@@ -1281,63 +1173,37 @@ def transcribe_audio(audio_path):
 
 with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🎙️ Voice Calendar Agent")
-    gr.Markdown("**AI-powered calendar scheduling with Slot-Filling State Machine**")
     
     with gr.Row():
-        gr.Markdown("[🔑 Login with Google](/login)")
+        gr.Markdown("[🔑 Login](/login)")
         gr.Markdown("[🚪 Logout](/logout)")
 
     chatbot = gr.Chatbot(height=450, show_label=False)
     
     with gr.Row():
-        msg = gr.Textbox(
-            label="Message",
-            placeholder="Schedule a meeting with Bob tomorrow at 2 PM...",
-            show_label=False,
-            scale=8
-        )
-        voice_btn = gr.Audio(
-            sources=["microphone"],
-            type="filepath",
-            label="🎤",
-            show_label=False,
-            scale=1,
-            waveform_options={"show_recording_waveform": True}
-        )
+        msg = gr.Textbox(placeholder="Schedule meeting with Bob tomorrow at 2 PM", show_label=False, scale=8)
+        voice_btn = gr.Audio(sources=["microphone"], type="filepath", label="🎤", show_label=False, scale=1)
         send = gr.Button("Send", scale=1, variant="primary")
     
     with gr.Row():
         record_again = gr.Button("🎤 Record Again", size="sm")
     
-    clear = gr.Button("Reset Conversation", variant="secondary")
+    clear = gr.Button("Reset", variant="secondary")
 
-    gr.Markdown("### 💡 Examples:")
-    gr.Examples(
-        examples=[
-            "Schedule meeting with Bob tomorrow at 2 PM",
-            "Book call with Sarah on 16 Dec at 5 o'clock",
-        ],
-        inputs=msg
-    )
+    gr.Examples(examples=["Schedule meeting with Bob tomorrow at 2 PM"], inputs=msg)
 
     send.click(chat, [msg, chatbot], [chatbot, msg])
     msg.submit(chat, [msg, chatbot], [chatbot, msg])
     clear.click(reset_conversation, None, [chatbot, msg])
-    
     voice_btn.change(transcribe_audio, voice_btn, msg)
     record_again.click(lambda: None, None, voice_btn)
 
 app = gr.mount_gradio_app(app, demo, path="/")
 
-# ================== STARTUP ==================
-
 @app.on_event("startup")
 async def startup():
     init_db()
-    print("✅ Voice Calendar Agent started with Slot-Filling State Machine!")
-    print(f"📍 Redirect URI: {REDIRECT_URI}")
-
-# ================== START ==================
+    print("✅ Calendar Agent with Slot-Filling State Machine!")
 
 if __name__ == "__main__":
     import uvicorn
