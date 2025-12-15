@@ -1255,39 +1255,40 @@ def format_messages_from_history(history, user_message):
     if not isinstance(user_message, str):
         user_message = str(user_message) if user_message else ""
     
-    # Check if this is a NEW schedule request (without complete date/time in the message itself)
-    is_schedule = any(word in user_message.lower() for word in ["schedule", "book", "arrange", "create", "set up", "plan"])
-    has_date = any(word in user_message.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "next", "this", "dec", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov"])
-    has_time = any(word in user_message.lower() for word in ["am", "pm", ":", "noon", "morning", "afternoon", "evening"]) and any(char.isdigit() for char in user_message)
+    # Find the last completed event (marked by ✅)
+    last_event_index = -1
+    for i in range(len(history) - 1, -1, -1):
+        if isinstance(history[i], dict):
+            content = history[i].get("content", "")
+            if isinstance(content, str) and "✅ Event created:" in content:
+                last_event_index = i
+                break
     
-    if is_schedule and not (has_date and has_time):
-        # NEW SCHEDULE REQUEST WITHOUT COMPLETE INFO
-        # Don't include ANY previous context to avoid date/time contamination
-        print(f"🚨 NEW SCHEDULE REQUEST DETECTED - CLEARING CONTEXT")
-        # Start fresh - only include this message
+    # Include messages AFTER the last completed event
+    if last_event_index >= 0:
+        relevant_history = history[last_event_index + 1:]
     else:
-        # Not a new schedule request OR has complete info - include some context
-        # But still filter out previous date/time mentions
-        for msg in history[-6:]:  # Only last 6 messages
-            if isinstance(msg, dict):
-                content = msg.get("content", "")
-                if not isinstance(content, str):
-                    continue
-                    
-                # Skip event creation confirmations
-                if "✅ Event created:" in content:
-                    continue
-                    
-                if msg.get("role") == "user":
-                    # Filter out date/time from previous schedule requests
-                    if not any(word in content.lower() for word in ["tomorrow", "today", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "at", "am", "pm"]):
-                        msgs.append({"role": "user", "content": content})
-                elif msg.get("role") == "assistant":
+        relevant_history = history[-10:]  # Last 10 if no event found
+    
+    # Add relevant history to messages
+    for msg in relevant_history:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+            if not isinstance(content, str):
+                continue
+            
+            role = msg.get("role")
+            if role == "user":
+                msgs.append({"role": "user", "content": content})
+            elif role == "assistant":
+                # Skip error messages and redirects
+                if not any(phrase in content for phrase in ["I'm a calendar assistant and can only", "❌ Error:"]):
                     msgs.append({"role": "assistant", "content": content})
     
     if user_message:
         msgs.append({"role": "user", "content": user_message.strip()})
     
+    print(f"📚 Context size: {len(msgs)} messages")
     return msgs
 
 
@@ -1378,29 +1379,50 @@ You: [NOW call create_calendar_event with all required info]"""
                 date_str = args.get("date_str", "").strip()
                 time_str = args.get("time_str", "").strip()
                 
-                # Additional validation: Check if user actually provided time in their message
-                # Look at the last user message to see if they mentioned a time
+                # Additional validation: Check if user actually provided time
+                # Look through recent conversation to see if time was mentioned
                 user_mentioned_time = False
-                if history:
-                    # Get last few user messages
-                    recent_user_messages = [msg.get("content", "") for msg in history[-3:] if msg.get("role") == "user"]
-                    recent_user_messages.append(user_message)
-                    
-                    for msg_text in recent_user_messages:
-                        if isinstance(msg_text, str):
-                            # Check if any time indicators are present
-                            if any(indicator in msg_text.lower() for indicator in ["am", "pm", ":", "noon", "morning", "afternoon", "evening", "night"]):
-                                if any(char.isdigit() for char in msg_text):
-                                    user_mentioned_time = True
-                                    break
+                user_mentioned_date = False
                 
-                print(f"⏰ Time validation: time_str='{time_str}', user_mentioned_time={user_mentioned_time}")
+                if history:
+                    # Get messages after last event creation
+                    relevant_msgs = []
+                    for i in range(len(history) - 1, -1, -1):
+                        msg = history[i]
+                        if isinstance(msg, dict):
+                            content = msg.get("content", "")
+                            if isinstance(content, str):
+                                if "✅ Event created:" in content:
+                                    break
+                                if msg.get("role") == "user":
+                                    relevant_msgs.insert(0, content)
+                    
+                    # Add current message
+                    relevant_msgs.append(user_message)
+                    
+                    # Check all relevant messages
+                    for msg_text in relevant_msgs:
+                        # Check for time
+                        if any(indicator in msg_text.lower() for indicator in ["am", "pm", "noon"]):
+                            if any(char.isdigit() for char in msg_text):
+                                user_mentioned_time = True
+                        
+                        # Check for date
+                        if any(day in msg_text.lower() for day in ["today", "tomorrow", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
+                            user_mentioned_date = True
+                
+                print(f"⏰ Validation: date='{date_str}' (mentioned:{user_mentioned_date}), time='{time_str}' (mentioned:{user_mentioned_time})")
                 
                 if not date_str or not time_str:
-                    assistant_reply = "❓ I need more information. Please provide:\n- **Date** (today, tomorrow, Monday, etc.)\n- **Time** (3 PM, 10 AM, etc.)\n\nExample: 'Schedule meeting with Aman tomorrow at 3 PM'"
+                    assistant_reply = "❓ I need more information to schedule this meeting:\n"
+                    if not date_str:
+                        assistant_reply += "- **Date** (today, tomorrow, Monday, etc.)\n"
+                    if not time_str:
+                        assistant_reply += "- **Time** (3 PM, 10 AM, etc.)\n"
+                elif not user_mentioned_date:
+                    assistant_reply = "❓ What date would you like to schedule this meeting?\n\n(e.g., today, tomorrow, Monday, etc.)"
                 elif not user_mentioned_time:
-                    # User provided date but not time
-                    assistant_reply = "❓ What time would you like to schedule this meeting?\n\nPlease specify a time (e.g., 3 PM, 10:30 AM, etc.)"
+                    assistant_reply = "❓ What time would you like to schedule this meeting?\n\n(e.g., 3 PM, 10:30 AM, etc.)"
                 else:
                     # All good - create event
                     args["user_id"] = user_id
