@@ -832,7 +832,8 @@
 #     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 """
-Voice Calendar Agent - Enhanced with Delete/Cancel + Better Time Parsing
+Voice Calendar Agent - Full Featured with CRUD Operations
+Supports: Create, Read, Delete with exceptions, Advanced date/time parsing
 """
 
 import os
@@ -1034,19 +1035,36 @@ def get_calendar_service(user_id):
 # ================== CALENDAR FUNCTIONS ==================
 
 def parse_datetime(date_str, time_str):
+    """Enhanced datetime parsing supporting multiple date formats"""
     india_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.datetime.now(india_tz)
     
     date_str_lower = date_str.lower()
+    
     if "tomorrow" in date_str_lower:
         target_date = today.date() + datetime.timedelta(days=1)
     elif "today" in date_str_lower:
         target_date = today.date()
     else:
         try:
-            parsed = parser.parse(date_str, fuzzy=True)
+            temp_str = date_str
+            year_match = re.search(r'\b(\d{2})\b$', date_str)
+            if year_match:
+                two_digit_year = int(year_match.group(1))
+                if two_digit_year < 50:
+                    four_digit_year = 2000 + two_digit_year
+                else:
+                    four_digit_year = 1900 + two_digit_year
+                temp_str = date_str.replace(year_match.group(1), str(four_digit_year))
+            
+            parsed = parser.parse(temp_str, fuzzy=True, default=today.replace(year=today.year))
             target_date = parsed.date()
-        except Exception:
+            
+            if parsed.year == today.year and target_date < today.date():
+                target_date = target_date.replace(year=today.year + 1)
+                
+        except Exception as e:
+            print(f"Date parsing failed for '{date_str}': {e}, using today")
             target_date = today.date()
     
     try:
@@ -1121,7 +1139,6 @@ def list_upcoming_events(user_id, max_results=10, return_raw=False):
         for idx, event in enumerate(events, 1):
             start = event['start'].get('dateTime', event['start'].get('date'))
             summary = event.get('summary', 'No title')
-            event_id = event.get('id', '')
             
             try:
                 dt = parser.parse(start)
@@ -1138,28 +1155,73 @@ def list_upcoming_events(user_id, max_results=10, return_raw=False):
         return f"❌ Error listing events: {e}"
 
 
-def delete_event_by_criteria(user_id, criteria_type, criteria_value):
-    """
-    Delete events based on criteria
-    criteria_type: 'time', 'name', 'all'
-    criteria_value: specific time/name or None for 'all'
-    """
+def delete_event_by_criteria(user_id, criteria_type, criteria_value, except_criteria=None):
+    """Delete events based on criteria with optional exceptions"""
     try:
         service = get_calendar_service(user_id)
         india_tz = pytz.timezone('Asia/Kolkata')
+        now = datetime.datetime.now(india_tz)
         
-        # Get all upcoming events
         events = list_upcoming_events(user_id, max_results=50, return_raw=True)
         
         if not events:
             return "📅 No upcoming events to delete."
         
         deleted_count = 0
+        skipped_count = 0
         deleted_names = []
+        skipped_names = []
+        
+        def should_skip_event(event):
+            if not except_criteria:
+                return False
+            
+            except_type = except_criteria.get('type')
+            except_value = except_criteria.get('value', '').lower().strip()
+            
+            if except_type == 'name':
+                summary = event.get('summary', '').lower()
+                if except_value in summary:
+                    return True
+            
+            elif except_type == 'date':
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                try:
+                    event_dt = parser.parse(start)
+                    
+                    if except_value == 'today':
+                        if event_dt.date() == now.date():
+                            return True
+                    elif except_value == 'tomorrow':
+                        tomorrow = now.date() + datetime.timedelta(days=1)
+                        if event_dt.date() == tomorrow:
+                            return True
+                    else:
+                        try:
+                            except_date_str = except_value
+                            year_match = re.search(r'\b(\d{2})\b$', except_date_str)
+                            if year_match:
+                                two_digit_year = int(year_match.group(1))
+                                four_digit_year = 2000 + two_digit_year if two_digit_year < 50 else 1900 + two_digit_year
+                                except_date_str = except_date_str.replace(year_match.group(1), str(four_digit_year))
+                            
+                            except_dt = parser.parse(except_date_str, fuzzy=True)
+                            if event_dt.date() == except_dt.date():
+                                return True
+                        except:
+                            pass
+                except:
+                    pass
+            
+            return False
         
         if criteria_type == "all":
-            # Delete all upcoming events
             for event in events:
+                if should_skip_event(event):
+                    skipped_count += 1
+                    skipped_names.append(event.get('summary', 'Untitled'))
+                    continue
+                
                 try:
                     service.events().delete(calendarId='primary', eventId=event['id']).execute()
                     deleted_count += 1
@@ -1167,20 +1229,26 @@ def delete_event_by_criteria(user_id, criteria_type, criteria_value):
                 except Exception as e:
                     print(f"Error deleting event {event['id']}: {e}")
             
-            return f"🗑️ Deleted **{deleted_count}** upcoming events."
+            response = f"🗑️ Deleted **{deleted_count}** upcoming events."
+            if skipped_count > 0:
+                response += f"\n✅ Kept **{skipped_count}** events as requested:\n" + "\n".join([f"• {name}" for name in skipped_names])
+            return response
         
         elif criteria_type == "time":
-            # Delete events at specific time
             target_time = criteria_value.lower().strip()
             
             for event in events:
+                if should_skip_event(event):
+                    skipped_count += 1
+                    skipped_names.append(event.get('summary', 'Untitled'))
+                    continue
+                
                 start = event['start'].get('dateTime', event['start'].get('date'))
                 try:
                     dt = parser.parse(start)
                     event_time = dt.strftime('%I:%M %p').lower()
                     event_time_24 = dt.strftime('%H:%M')
                     
-                    # Parse target time
                     try:
                         target_dt = parser.parse(target_time, fuzzy=True)
                         target_formatted = target_dt.strftime('%I:%M %p').lower()
@@ -1196,15 +1264,22 @@ def delete_event_by_criteria(user_id, criteria_type, criteria_value):
                     pass
             
             if deleted_count > 0:
-                return f"🗑️ Deleted **{deleted_count}** event(s) at {criteria_value}:\n" + "\n".join([f"• {name}" for name in deleted_names])
+                response = f"🗑️ Deleted **{deleted_count}** event(s) at {criteria_value}:\n" + "\n".join([f"• {name}" for name in deleted_names])
+                if skipped_count > 0:
+                    response += f"\n✅ Kept **{skipped_count}** events as requested"
+                return response
             else:
                 return f"❌ No events found at {criteria_value}."
         
         elif criteria_type == "name":
-            # Delete events matching name/keyword
             search_term = criteria_value.lower().strip()
             
             for event in events:
+                if should_skip_event(event):
+                    skipped_count += 1
+                    skipped_names.append(event.get('summary', 'Untitled'))
+                    continue
+                
                 summary = event.get('summary', '').lower()
                 if search_term in summary:
                     service.events().delete(calendarId='primary', eventId=event['id']).execute()
@@ -1212,7 +1287,10 @@ def delete_event_by_criteria(user_id, criteria_type, criteria_value):
                     deleted_names.append(event.get('summary', 'Untitled'))
             
             if deleted_count > 0:
-                return f"🗑️ Deleted **{deleted_count}** event(s) matching '{criteria_value}':\n" + "\n".join([f"• {name}" for name in deleted_names])
+                response = f"🗑️ Deleted **{deleted_count}** event(s) matching '{criteria_value}':\n" + "\n".join([f"• {name}" for name in deleted_names])
+                if skipped_count > 0:
+                    response += f"\n✅ Kept **{skipped_count}** events as requested"
+                return response
             else:
                 return f"❌ No events found matching '{criteria_value}'."
         
@@ -1270,30 +1348,36 @@ Examples:
 
 
 def extract_delete_criteria(user_message: str) -> dict:
-    """Extract what to delete from user message"""
+    """Extract what to delete from user message, including exceptions"""
     try:
-        prompt = f"""Extract deletion criteria from the user's message.
+        prompt = f"""Extract deletion criteria from the user's message, including any exceptions.
 
 User message: "{user_message}"
 
 Respond ONLY with a JSON object (no markdown):
 {{
     "type": "all" | "time" | "name",
-    "value": "specific time or name" | null
+    "value": "specific time or name" | null,
+    "except": {{
+        "type": "name" | "date" | null,
+        "value": "exception value" | null
+    }}
 }}
 
 Examples:
-- "Cancel all meetings" -> {{"type": "all", "value": null}}
-- "Delete event at 2 PM" -> {{"type": "time", "value": "2 PM"}}
-- "Cancel meeting with Bob" -> {{"type": "name", "value": "Bob"}}
-- "Remove 6 o'clock meeting" -> {{"type": "time", "value": "6 PM"}}
+- "Cancel all meetings" -> {{"type": "all", "value": null, "except": {{"type": null, "value": null}}}}
+- "Delete event at 2 PM" -> {{"type": "time", "value": "2 PM", "except": {{"type": null, "value": null}}}}
+- "Cancel all events except meeting with Aman" -> {{"type": "all", "value": null, "except": {{"type": "name", "value": "Aman"}}}}
+- "Delete all meetings except today's" -> {{"type": "all", "value": null, "except": {{"type": "date", "value": "today"}}}}
+- "Cancel all except tomorrow" -> {{"type": "all", "value": null, "except": {{"type": "date", "value": "tomorrow"}}}}
+- "Remove all events except 16 Dec" -> {{"type": "all", "value": null, "except": {{"type": "date", "value": "16 Dec"}}}}
 """
 
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=100
+            max_tokens=150
         )
         
         result = response.choices[0].message.content.strip()
@@ -1305,7 +1389,7 @@ Examples:
 
     except Exception as e:
         print(f"❌ Criteria extraction error: {e}")
-        return {"type": "other", "value": None}
+        return {"type": "other", "value": None, "except": {"type": None, "value": None}}
 
 # ================== SLOT FILLING STATE MACHINE ==================
 
@@ -1346,7 +1430,7 @@ class SlotFillingStateMachine:
             machine.active = data.get("active", False)
         return machine
 
-# ================== SLOT EXTRACTORS (ENHANCED) ==================
+# ================== SLOT EXTRACTORS ==================
 
 def extract_name_slot(text: str) -> Optional[str]:
     text = text.lower().strip()
@@ -1372,6 +1456,7 @@ def extract_name_slot(text: str) -> Optional[str]:
 
 
 def extract_date_slot(text: str) -> Optional[str]:
+    """Enhanced date extraction supporting multiple formats"""
     text = text.lower().strip()
     
     if "today" in text:
@@ -1384,6 +1469,19 @@ def extract_date_slot(text: str) -> Optional[str]:
         if day in text:
             return day
     
+    date_patterns = [
+        r'(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{2,4}))?',
+        r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:\s+(\d{2,4}))?',
+        r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?'
+    ]
+    
+    for pattern in date_patterns:
+        match = re.search(pattern, text)
+        if match:
+            matched_text = match.group(0)
+            print(f"Found date pattern: {matched_text}")
+            return matched_text
+    
     return None
 
 
@@ -1391,11 +1489,9 @@ def extract_time_slot(text: str) -> Optional[str]:
     """Enhanced time extraction supporting 6 o'clock, 6 o clock formats"""
     text = text.lower().strip()
     
-    # Pattern 1: X o'clock or X o clock (e.g., "6 o'clock", "6 o clock")
     match = re.search(r'(\d{1,2})\s*o[\'\s]?clock', text)
     if match:
         hour = int(match.group(1))
-        # Default to PM for common meeting hours (9-6), AM otherwise
         if 9 <= hour <= 11:
             return f"{hour} AM"
         elif hour == 12:
@@ -1403,7 +1499,6 @@ def extract_time_slot(text: str) -> Optional[str]:
         else:
             return f"{hour} PM"
     
-    # Pattern 2: Standard time patterns (2 PM, 14:30, etc.)
     time_patterns = [
         r'(\d{1,2})\s*(am|pm)',
         r'(\d{1,2}):(\d{2})\s*(am|pm)?',
@@ -1449,7 +1544,7 @@ def generate_prompt(state_machine: SlotFillingStateMachine) -> str:
         }
         return slot_prompts.get(missing[0])
 
-# ================== CHAT HANDLER WITH DELETE SUPPORT ==================
+# ================== CHAT HANDLER ==================
 
 def chat(user_message, history, state_dict, request: gr.Request):
     """Enhanced chat with intent classification + slot filling + delete support"""
@@ -1465,7 +1560,6 @@ def chat(user_message, history, state_dict, request: gr.Request):
     try:
         state_machine = SlotFillingStateMachine.from_dict(state_dict)
         
-        # If in slot-filling mode, continue
         if state_machine.active:
             print(f"📊 Continuing slot-filling. Current slots: {state_machine.slots}")
             
@@ -1507,7 +1601,6 @@ def chat(user_message, history, state_dict, request: gr.Request):
             history.append({"role": "assistant", "content": prompt})
             return history, "", new_state_dict
         
-        # Classify intent
         intent_data = classify_intent(user_message)
         intent = intent_data.get("intent", "other")
         
@@ -1528,12 +1621,19 @@ def chat(user_message, history, state_dict, request: gr.Request):
             return history, "", state_dict
         
         elif intent == "delete_event":
-            # Extract deletion criteria
             criteria = extract_delete_criteria(user_message)
+            
+            except_criteria = criteria.get("except", {})
+            if except_criteria.get("type") and except_criteria.get("value"):
+                except_dict = {"type": except_criteria["type"], "value": except_criteria["value"]}
+            else:
+                except_dict = None
+            
             result = delete_event_by_criteria(
                 user_id=user_id,
                 criteria_type=criteria.get("type", "other"),
-                criteria_value=criteria.get("value")
+                criteria_value=criteria.get("value"),
+                except_criteria=except_dict
             )
             
             history.append({"role": "user", "content": user_message})
@@ -1624,7 +1724,7 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     
     with gr.Row():
         msg = gr.Textbox(
-            placeholder="Try: 'List meetings' | 'Schedule meeting at 6 o clock' | 'Cancel all events'", 
+            placeholder="Try: 'List meetings' | 'Schedule meeting at 6 o clock' | 'Cancel all except Aman'", 
             show_label=False, 
             scale=8
         )
@@ -1639,11 +1739,12 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft()) as demo:
     gr.Examples(
         examples=[
             "List my upcoming meetings",
-            "Schedule meeting with Bob at 6 o'clock tomorrow",
-            "Cancel meeting at 2 PM",
-            "Delete all my events",
-            "Cancel meeting with Alice"
-        ], 
+            "Schedule meeting with Bob on 16 December at 6 o'clock",
+            "Book event on Dec 25 at 2 PM",
+            "Cancel all events except meeting with Aman",
+            "Delete all meetings except today's",
+            "Remove all events except 16 Dec"
+        ],
         inputs=msg
     )
 
