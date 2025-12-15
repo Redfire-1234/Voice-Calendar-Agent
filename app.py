@@ -1366,12 +1366,179 @@ def chat(user_message, history, request: gr.Request):
         return history, ""
 
     try:
+        # EXTRACT INFORMATION FROM CONVERSATION HISTORY
+        collected_info = {"name": None, "date": None, "time": None}
+        
+        # Find last reset point
+        last_reset_index = -1
+        for i in range(len(history) - 1, -1, -1):
+            if isinstance(history[i], dict):
+                content = history[i].get("content", "")
+                role = history[i].get("role", "")
+                if isinstance(content, str):
+                    if "✅" in content and "scheduled" in content:
+                        last_reset_index = i
+                        break
+                    if role == "user" and any(word in content.lower() for word in ["thanks", "thank you", "thankyou"]):
+                        last_reset_index = i
+                        break
+        
+        # Get messages after reset
+        if last_reset_index >= 0:
+            relevant_history = history[last_reset_index + 1:]
+        else:
+            relevant_history = history[-6:]
+        
+        # Extract info from ALL user messages in current context
+        for msg in relevant_history:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content", "").lower()
+                
+                # Extract name (look for "with X" or "meeting X" patterns)
+                if not collected_info["name"]:
+                    # Pattern: "with X" or "meeting with X"
+                    if "with" in content:
+                        parts = content.split("with")
+                        if len(parts) > 1:
+                            name_candidate = parts[1].strip().split()[0]
+                            if name_candidate and not any(word in name_candidate for word in ["today", "tomorrow", "at"]):
+                                collected_info["name"] = name_candidate
+                    # Pattern: "schedule meeting WORD" where WORD is a name
+                    elif "schedule" in content or "meeting" in content:
+                        words = content.replace("schedule", "").replace("meeting", "").strip().split()
+                        for word in words:
+                            if len(word) > 2 and word not in ["today", "tomorrow", "the", "and", "for", "at"]:
+                                collected_info["name"] = word
+                                break
+                
+                # Extract date
+                if not collected_info["date"]:
+                    if "today" in content:
+                        collected_info["date"] = "today"
+                    elif "tomorrow" in content:
+                        collected_info["date"] = "tomorrow"
+                    elif any(day in content for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
+                        for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]:
+                            if day in content:
+                                collected_info["date"] = day
+                                break
+                    # Look for date patterns like "16 dec", "16/12"
+                    else:
+                        import re
+                        date_patterns = [
+                            r'\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)',
+                            r'\d{1,2}/\d{1,2}'
+                        ]
+                        for pattern in date_patterns:
+                            match = re.search(pattern, content)
+                            if match:
+                                collected_info["date"] = match.group()
+                                break
+                
+                # Extract time
+                if not collected_info["time"]:
+                    import re
+                    time_patterns = [
+                        r'\d{1,2}\s*(?:am|pm)',
+                        r'\d{1,2}:\d{2}\s*(?:am|pm)?',
+                        r'\d{1,2}\s+o\'clock',
+                        r'\d{1,2}\s*(?:o\'clock)'
+                    ]
+                    for pattern in time_patterns:
+                        match = re.search(pattern, content)
+                        if match:
+                            collected_info["time"] = match.group()
+                            break
+        
+        # Add current message to extraction
+        current_lower = user_message.lower()
+        
+        if not collected_info["name"]:
+            if "with" in current_lower:
+                parts = current_lower.split("with")
+                if len(parts) > 1:
+                    name_candidate = parts[1].strip().split()[0]
+                    if name_candidate and not any(word in name_candidate for word in ["today", "tomorrow", "at"]):
+                        collected_info["name"] = name_candidate
+            elif "schedule" in current_lower or "meeting" in current_lower:
+                words = current_lower.replace("schedule", "").replace("meeting", "").strip().split()
+                for word in words:
+                    if len(word) > 2 and word not in ["today", "tomorrow", "the", "and", "for", "at"]:
+                        collected_info["name"] = word
+                        break
+        
+        if not collected_info["date"]:
+            if "today" in current_lower:
+                collected_info["date"] = "today"
+            elif "tomorrow" in current_lower:
+                collected_info["date"] = "tomorrow"
+            elif any(day in current_lower for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
+                for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]:
+                    if day in current_lower:
+                        collected_info["date"] = day
+                        break
+            else:
+                import re
+                date_patterns = [
+                    r'\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)',
+                    r'\d{1,2}/\d{1,2}'
+                ]
+                for pattern in date_patterns:
+                    match = re.search(pattern, current_lower)
+                    if match:
+                        collected_info["date"] = match.group()
+                        break
+        
+        if not collected_info["time"]:
+            import re
+            time_patterns = [
+                r'\d{1,2}\s*(?:am|pm)',
+                r'\d{1,2}:\d{2}\s*(?:am|pm)?',
+                r'\d{1,2}\s+o\'clock',
+                r'\d{1,2}\s*(?:o\'clock)'
+            ]
+            for pattern in time_patterns:
+                match = re.search(pattern, current_lower)
+                if match:
+                    collected_info["time"] = match.group()
+                    break
+        
+        print(f"📊 Collected Info: {collected_info}")
+        
+        # CHECK IF WE HAVE ALL INFO - if yes, create event directly!
+        if collected_info["name"] and collected_info["date"] and collected_info["time"]:
+            print("✅ All info collected! Creating event...")
+            result = create_calendar_event(
+                user_id=user_id,
+                name=collected_info["name"],
+                date_str=collected_info["date"],
+                time_str=collected_info["time"]
+            )
+            assistant_reply = result["message"]
+            if result.get("link"):
+                assistant_reply += f"\n🔗 [View]({result['link']})"
+            
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": assistant_reply})
+            return history, ""
+        
+        # Otherwise, ask for missing info using LLM
         messages = format_messages_from_history(history, user_message)
         
-        # OPTIMIZED SYSTEM PROMPT - Clear and concise
+        # Add collected info to system prompt
+        info_summary = f"""
+INFORMATION ALREADY COLLECTED FOR CURRENT EVENT:
+- Name: {collected_info['name'] or 'NOT PROVIDED YET'}
+- Date: {collected_info['date'] or 'NOT PROVIDED YET'}
+- Time: {collected_info['time'] or 'NOT PROVIDED YET'}
+
+If any field says 'NOT PROVIDED YET', ask for it. If all are collected, call create_calendar_event."""
+
         messages.insert(0, {
             "role": "system",
-            "content": """You are a calendar assistant. Keep responses SHORT (1-2 sentences max).
+            "content": f"""You are a calendar assistant. Keep responses SHORT (1-2 sentences max).
+
+{info_summary}
 
 YOUR TASKS:
 1. Schedule events (need: name/event, date, time)
@@ -1381,108 +1548,26 @@ YOUR TASKS:
 RESPONSE RULES:
 - Greetings → "Hi! What would you like me to schedule?"
 - Thanks → "You're welcome!"
-- Missing info → Ask for what's missing (be smart about what you already have)
-- All info present → Call function immediately
+- Missing info → Ask ONLY for what shows 'NOT PROVIDED YET' above
+- All info collected → This won't happen as the system handles it automatically
 - Non-calendar questions → "I only help with calendar events."
-
-CRITICAL - INFORMATION GATHERING:
-- Look at the ENTIRE conversation to gather: name, date, and time
-- Information can be split across multiple messages
-- Once you have ALL THREE (name, date, time) from ANY message in the conversation, call the function
-- Don't ask for information that was already provided
-
-CRITICAL - CONTEXT AWARENESS:
-- The conversation history only contains messages for the CURRENT event being scheduled
-- Previous events have been removed from context
-- Focus on gathering the THREE pieces of info for THIS event only
 
 DATE/TIME FORMATS ACCEPTED:
 - Dates: "today", "tomorrow", "16 Dec", "16/12", "Friday"
 - Times: "5 PM", "5 o'clock", "17:00", "5:30 PM"
 
-EXAMPLES:
-
-Example 1 - All info at once:
-User: "Schedule meeting with Bob tomorrow at 5 PM"
-You: [Call create_calendar_event with name="Bob", date_str="tomorrow", time_str="5 PM"]
-
-Example 2 - Info split across messages:
-User: "Schedule meeting with Amir"
-You: "When? (date and time)"
-User: "Today at 7 PM"
-You: [Call create_calendar_event with name="Amir", date_str="today", time_str="7 PM"]
-
-Example 3 - Info split differently:
-User: "Schedule meeting today at 7 PM"
-You: "Who's this meeting with?"
-User: "With Amir"
-You: [Call create_calendar_event with name="Amir", date_str="today", time_str="7 PM"]
-
-Example 4 - Greeting:
-User: "Hi"
-You: "Hi! What would you like me to schedule?"
-
-Example 5 - Thanks:
-User: "Thanks"
-You: "You're welcome!"
-
-KEEP IT SHORT. No long explanations. Be smart about what info you already have."""
+KEEP IT SHORT. Only ask for what's missing based on the information summary above."""
         })
 
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=messages,
-            tools=[{"type": "function", "function": fn} for fn in functions],
-            tool_choice="auto",
-            max_tokens=256,  # Reduced for shorter responses
-            temperature=0.5  # Lower temperature for more consistent responses
+            max_tokens=256,
+            temperature=0.5
         )
 
         msg = response.choices[0].message
-
-        if msg.tool_calls:
-            tool_call = msg.tool_calls[0]
-            
-            if isinstance(tool_call.function.arguments, str):
-                args = json.loads(tool_call.function.arguments)
-            else:
-                args = dict(tool_call.function.arguments)
-            
-            print(f"🤖 Function: {tool_call.function.name}")
-            print(f"🤖 Args: {json.dumps(args, indent=2)}")
-            
-            if tool_call.function.name == "create_calendar_event":
-                date_str = args.get("date_str", "").strip()
-                time_str = args.get("time_str", "").strip()
-                name = args.get("name", "").strip()
-                
-                if not name or not date_str or not time_str:
-                    missing = []
-                    if not name: missing.append("name/event")
-                    if not date_str: missing.append("date")
-                    if not time_str: missing.append("time")
-                    assistant_reply = f"Need: {', '.join(missing)}"
-                else:
-                    args["user_id"] = user_id
-                    result = create_calendar_event(**args)
-                    assistant_reply = result["message"]
-                    if result.get("link"):
-                        assistant_reply += f"\n🔗 [View]({result['link']})"
-            
-            elif tool_call.function.name == "list_upcoming_events":
-                args["user_id"] = user_id
-                result = list_upcoming_events(**args)
-                assistant_reply = result["message"]
-            
-            elif tool_call.function.name == "delete_calendar_event":
-                args["user_id"] = user_id
-                result = delete_calendar_event(**args)
-                assistant_reply = result["message"]
-            
-            else:
-                assistant_reply = f"❌ Unknown function"
-        else:
-            assistant_reply = msg.content
+        assistant_reply = msg.content
 
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": assistant_reply})
