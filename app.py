@@ -1270,7 +1270,7 @@ def format_messages_from_history(history, user_message):
     else:
         relevant_history = history[-10:]  # Last 10 if no event found
     
-    # Add relevant history to messages
+    # Add relevant history to messages - with aggressive filtering
     for msg in relevant_history:
         if isinstance(msg, dict):
             content = msg.get("content", "")
@@ -1278,17 +1278,31 @@ def format_messages_from_history(history, user_message):
                 continue
             
             role = msg.get("role")
+            
+            # Skip problematic assistant messages
+            if role == "assistant":
+                # Skip these types of messages:
+                skip_phrases = [
+                    "I'm a calendar assistant and can only help",
+                    "I'm a calendar assistant and can only",
+                    "❌ Error:",
+                    "Try [logging in again]"
+                ]
+                if any(phrase in content for phrase in skip_phrases):
+                    continue
+            
             if role == "user":
                 msgs.append({"role": "user", "content": content})
             elif role == "assistant":
-                # Skip error messages and redirects
-                if not any(phrase in content for phrase in ["I'm a calendar assistant and can only", "❌ Error:"]):
-                    msgs.append({"role": "assistant", "content": content})
+                msgs.append({"role": "assistant", "content": content})
     
     if user_message:
         msgs.append({"role": "user", "content": user_message.strip()})
     
-    print(f"📚 Context size: {len(msgs)} messages")
+    print(f"📚 Context: {len(msgs)} messages")
+    for i, m in enumerate(msgs):
+        print(f"  {i+1}. {m['role']}: {m['content'][:60]}...")
+    
     return msgs
 
 
