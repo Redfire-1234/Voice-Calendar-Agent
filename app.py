@@ -1493,7 +1493,7 @@ app = gr.mount_gradio_app(app, demo, path="/")
 async def startup():
     init_db()
     print("✅ Voice Calendar Agent started!")
-    print(f("📍 Redirect URI: {REDIRECT_URI}")
+    print(f("📍 Redirect URI: {REDIRECT_URI}"))
 
 # ================== START ==================
 
