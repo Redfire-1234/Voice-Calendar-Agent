@@ -1052,7 +1052,7 @@ def parse_datetime(date_str, time_str):
             temp_str = date_str
             
             # Convert 2-digit year to 4-digit if present
-            year_match = re.search(r'\b(\d{2})\b', except_date_str)
+            year_match = re.search(r'\b(\d{2})\b', date_str)
 
 
 def create_calendar_event(user_id, name, date_str, time_str, title=None):
@@ -1186,7 +1186,7 @@ def delete_event_by_criteria(user_id, criteria_type, criteria_value, except_crit
                         try:
                             except_date_str = except_value
                             # Handle 2-digit years
-                            year_match = re.search(r'\b(\d{2})\b', except_date_str)
+                            year_match = re.search(r'\b(\d{2})\b', date_str)
 
 # ================== INTENT CLASSIFICATION ==================
 
