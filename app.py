@@ -1392,7 +1392,10 @@ def chat(user_message, history, request: gr.Request):
         # Extract info from ALL user messages in current context
         for msg in relevant_history:
             if isinstance(msg, dict) and msg.get("role") == "user":
-                content = msg.get("content", "").lower()
+                content = msg.get("content", "")
+                if not isinstance(content, str):
+                    continue
+                content = content.lower()
                 
                 # Extract name (look for "with X" or "meeting X" patterns)
                 if not collected_info["name"]:
