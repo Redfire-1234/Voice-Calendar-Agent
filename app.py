@@ -1291,24 +1291,31 @@ def format_messages_from_history(history, user_message):
     if not isinstance(user_message, str):
         user_message = str(user_message) if user_message else ""
     
-    # CRITICAL: Reset context after EACH successful event creation
+    # CRITICAL: Reset context after EACH successful event OR thank you
     # This ensures we focus ONLY on the current event being created
-    last_success_index = -1
+    last_reset_index = -1
     for i in range(len(history) - 1, -1, -1):
         if isinstance(history[i], dict):
             content = history[i].get("content", "")
-            if isinstance(content, str) and "✅" in content and "scheduled" in content:
-                last_success_index = i
-                break
+            role = history[i].get("role", "")
+            if isinstance(content, str):
+                # Reset after successful event creation
+                if "✅" in content and "scheduled" in content:
+                    last_reset_index = i
+                    break
+                # Also reset after user says thanks (marks end of interaction)
+                if role == "user" and any(word in content.lower() for word in ["thanks", "thank you", "thankyou"]):
+                    last_reset_index = i
+                    break
     
-    # Keep only messages AFTER last successful event
-    if last_success_index >= 0:
-        relevant_history = history[last_success_index + 1:]
+    # Keep only messages AFTER last reset point
+    if last_reset_index >= 0:
+        relevant_history = history[last_reset_index + 1:]
     else:
-        # No event yet - keep last 10 messages
-        relevant_history = history[-10:]
+        # No event yet - keep last 6 messages only
+        relevant_history = history[-6:]
     
-    # Add messages to context
+    # Add messages to context - but filter out "You're welcome" responses
     for msg in relevant_history:
         if isinstance(msg, dict):
             content = msg.get("content", "")
@@ -1317,9 +1324,15 @@ def format_messages_from_history(history, user_message):
             
             role = msg.get("role")
             
-            # Skip login errors only
-            if role == "assistant" and "Please login first" in content:
-                continue
+            # Skip certain assistant messages that aren't relevant
+            if role == "assistant":
+                skip_content = [
+                    "Please login first",
+                    "You're welcome",
+                    "✅"  # Skip old event confirmations
+                ]
+                if any(skip in content for skip in skip_content):
+                    continue
             
             if role in ["user", "assistant"]:
                 msgs.append({"role": role, "content": content})
@@ -1328,7 +1341,7 @@ def format_messages_from_history(history, user_message):
     if user_message:
         msgs.append({"role": "user", "content": user_message.strip()})
     
-    print(f"📚 Context: {len(msgs)} messages (reset after last event)")
+    print(f"📚 Context: {len(msgs)} messages (reset after event/thanks)")
     for i, m in enumerate(msgs):
         print(f"  {i+1}. {m['role']}: {m['content'][:80]}...")
     
@@ -1368,36 +1381,52 @@ YOUR TASKS:
 RESPONSE RULES:
 - Greetings → "Hi! What would you like me to schedule?"
 - Thanks → "You're welcome!"
-- Missing info → Ask for ONE missing thing at a time
+- Missing info → Ask for what's missing (be smart about what you already have)
 - All info present → Call function immediately
 - Non-calendar questions → "I only help with calendar events."
 
-CRITICAL - CONTEXT RESET:
-- After EACH event is created, forget all previous event details
-- Focus ONLY on the current event being scheduled
-- Don't mix information from previous events
+CRITICAL - INFORMATION GATHERING:
+- Look at the ENTIRE conversation to gather: name, date, and time
+- Information can be split across multiple messages
+- Once you have ALL THREE (name, date, time) from ANY message in the conversation, call the function
+- Don't ask for information that was already provided
+
+CRITICAL - CONTEXT AWARENESS:
+- The conversation history only contains messages for the CURRENT event being scheduled
+- Previous events have been removed from context
+- Focus on gathering the THREE pieces of info for THIS event only
 
 DATE/TIME FORMATS ACCEPTED:
 - Dates: "today", "tomorrow", "16 Dec", "16/12", "Friday"
 - Times: "5 PM", "5 o'clock", "17:00", "5:30 PM"
 
 EXAMPLES:
+
+Example 1 - All info at once:
+User: "Schedule meeting with Bob tomorrow at 5 PM"
+You: [Call create_calendar_event with name="Bob", date_str="tomorrow", time_str="5 PM"]
+
+Example 2 - Info split across messages:
+User: "Schedule meeting with Amir"
+You: "When? (date and time)"
+User: "Today at 7 PM"
+You: [Call create_calendar_event with name="Amir", date_str="today", time_str="7 PM"]
+
+Example 3 - Info split differently:
+User: "Schedule meeting today at 7 PM"
+You: "Who's this meeting with?"
+User: "With Amir"
+You: [Call create_calendar_event with name="Amir", date_str="today", time_str="7 PM"]
+
+Example 4 - Greeting:
 User: "Hi"
 You: "Hi! What would you like me to schedule?"
 
-User: "Schedule meeting with Bob"
-You: "When? (date and time)"
-
-User: "Tomorrow at 5 PM"
-You: [Call function - you have all info]
-
+Example 5 - Thanks:
 User: "Thanks"
 You: "You're welcome!"
 
-User: "Schedule another meeting"
-You: "Who's this meeting with?"
-
-KEEP IT SHORT. No long explanations."""
+KEEP IT SHORT. No long explanations. Be smart about what info you already have."""
         })
 
         response = groq_client.chat.completions.create(
