@@ -992,23 +992,30 @@ class SlotFillingStateMachine:
 def extract_name_slot(text: str) -> Optional[str]:
     text = text.lower().strip()
     
+    # Pattern 1: "with NAME"
     match = re.search(r'with\s+(\w+)', text)
     if match:
         name = match.group(1)
-        if name not in ["today", "tomorrow", "at", "on"]:
+        if name not in ["today", "tomorrow", "at", "on", "the", "a"]:
+            print(f"  → Found name via 'with': {name}")
             return name.capitalize()
     
-    match = re.search(r'(?:meeting|schedule)\s+(?:with\s+)?(\w+)', text)
+    # Pattern 2: "meeting NAME" or "schedule NAME"
+    match = re.search(r'(?:meeting|schedule|event)\s+(?:with\s+)?(\w+)', text)
     if match:
         name = match.group(1)
-        if name not in ["today", "tomorrow", "at", "meeting"]:
+        if name not in ["today", "tomorrow", "at", "on", "the", "a", "meeting", "with"]:
+            print(f"  → Found name via 'meeting/schedule': {name}")
             return name.capitalize()
     
+    # Pattern 3: Just a single word (if user is answering "who?")
     words = text.split()
     if len(words) == 1 and len(words[0]) > 2:
-        if words[0] not in ["today", "tomorrow", "yes", "no", "ok"]:
+        if words[0] not in ["today", "tomorrow", "yes", "no", "ok", "sure"]:
+            print(f"  → Found name as single word: {words[0]}")
             return words[0].capitalize()
     
+    print(f"  → No name found in: {text}")
     return None
 
 
@@ -1102,18 +1109,34 @@ def chat(user_message, history, request: gr.Request):
         state_data = request.session.get("state_machine")
         state_machine = SlotFillingStateMachine.from_dict(state_data) if state_data else SlotFillingStateMachine()
         
+        print(f"📊 Current slots: {state_machine.slots}")
+        
         name = extract_name_slot(user_message)
         date = extract_date_slot(user_message)
         time = extract_time_slot(user_message)
         
-        print(f"🔍 Extracted: name={name}, date={date}, time={time}")
+        print(f"🔍 Extracted from '{user_message}': name={name}, date={date}, time={time}")
         
-        if name and not state_machine.get_slot("name"):
-            state_machine.update_slot("name", name)
-        if date and not state_machine.get_slot("date"):
-            state_machine.update_slot("date", date)
-        if time and not state_machine.get_slot("time"):
-            state_machine.update_slot("time", time)
+        # Update slots - DON'T overwrite if already filled
+        if name:
+            if not state_machine.get_slot("name"):
+                state_machine.update_slot("name", name)
+            else:
+                print(f"⚠️ Name already filled: {state_machine.get_slot('name')}, ignoring new: {name}")
+        
+        if date:
+            if not state_machine.get_slot("date"):
+                state_machine.update_slot("date", date)
+            else:
+                print(f"⚠️ Date already filled: {state_machine.get_slot('date')}, ignoring new: {date}")
+        
+        if time:
+            if not state_machine.get_slot("time"):
+                state_machine.update_slot("time", time)
+            else:
+                print(f"⚠️ Time already filled: {state_machine.get_slot('time')}, ignoring new: {time}")
+        
+        print(f"💾 Updated slots: {state_machine.slots}")
         
         request.session["state_machine"] = state_machine.to_dict()
         
