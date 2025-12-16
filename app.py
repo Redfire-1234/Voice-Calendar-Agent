@@ -1889,8 +1889,7 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft(), css=custom_
         chatbot = gr.Chatbot(
             height=500, 
             show_label=False,
-            avatar_images=(None, "https://api.dicebear.com/7.x/bottts/svg?seed=calendar"),
-            bubble_full_width=False
+            avatar_images=(None, "https://api.dicebear.com/7.x/bottts/svg?seed=calendar")
         )
     
     with gr.Row(elem_classes="input-row"):
