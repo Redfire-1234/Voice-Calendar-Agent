@@ -1215,6 +1215,7 @@
 #     import uvicorn
 #     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
+
 """
 Voice Calendar Agent - Full Featured with CRUD Operations
 Supports: Create, Read, Update, Delete with exceptions, Advanced date/time parsing
@@ -2298,6 +2299,7 @@ def transcribe_audio(audio_path):
 # ================== GRADIO UI ==================
 
 custom_css = """
+/* Main container */
 .gradio-container {
     max-width: 900px !important;
     margin: auto !important;
