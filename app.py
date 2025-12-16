@@ -1971,5 +1971,472 @@ class SlotFillingStateMachine:
     def deactivate(self):
         self.active = False
         self.slots = {"name": None, "date": None, "time": None}
+    
+    def update_slot(self, slot_name: str, value: str):
+        if slot_name in self.slots:
+            self.slots[slot_name] = value
+            print(f"✅ Slot updated: {slot_name} = {value}")
+    
+    def get_slot(self, slot_name: str):
+        return self.slots.get(slot_name)
+    
+    def all_slots_filled(self) -> bool:
+        return all(self.slots.values())
+    
+    def get_missing_slots(self) -> list:
+        return [k for k, v in self.slots.items() if not v]
+    
+    def to_dict(self) -> dict:
+        return {"slots": self.slots, "active": self.active}
+    
+    @classmethod
+    def from_dict(cls, data: dict):
+        machine = cls()
+        if data:
+            machine.slots = data.get("slots", {"name": None, "date": None, "time": None})
+            machine.active = data.get("active", False)
+        return machine
+
+# ================== SLOT EXTRACTORS ==================
+
+def extract_name_slot(text: str) -> Optional[str]:
+    text = text.lower().strip()
+    
+    match = re.search(r'with\s+(\w+)', text)
+    if match:
+        name = match.group(1)
+        if name not in ["today", "tomorrow", "at", "on", "the", "a"]:
+            return name.capitalize()
+    
+    match = re.search(r'(?:meeting|schedule|event)\s+(?:with\s+)?(\w+)', text)
+    if match:
+        name = match.group(1)
+        if name not in ["today", "tomorrow", "at", "on", "the", "a", "meeting", "with"]:
+            return name.capitalize()
+    
+    words = text.split()
+    if len(words) == 1 and len(words[0]) > 2:
+        if words[0] not in ["today", "tomorrow", "yes", "no", "ok", "sure"]:
+            return words[0].capitalize()
+    
+    return None
+
+
+def extract_date_slot(text: str) -> Optional[str]:
+    """Enhanced date extraction supporting multiple formats"""
+    text = text.lower().strip()
+    
+    if "today" in text:
+        return "today"
+    if "tomorrow" in text:
+        return "tomorrow"
+    
+    days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for day in days:
+        if day in text:
+            return day
+    
+    date_patterns = [
+        r'(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+(\d{2,4}))?',
+        r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:\s+(\d{2,4}))?',
+        r'(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?'
+    ]
+    
+    for pattern in date_patterns:
+        match = re.search(pattern, text)
+        if match:
+            matched_text = match.group(0)
+            print(f"Found date pattern: {matched_text}")
+            return matched_text
+    
+    return None
+
+
+def extract_time_slot(text: str) -> Optional[str]:
+    """Enhanced time extraction supporting 6 o'clock, 6 o clock formats"""
+    text = text.lower().strip()
+    
+    match = re.search(r'(\d{1,2})\s*o[\'\s]?clock', text)
+    if match:
+        hour = int(match.group(1))
+        if 9 <= hour <= 11:
+            return f"{hour} AM"
+        elif hour == 12:
+            return "12 PM"
+        else:
+            return f"{hour} PM"
+    
+    time_patterns = [
+        r'(\d{1,2})\s*(am|pm)',
+        r'(\d{1,2}):(\d{2})\s*(am|pm)?',
+    ]
+    
+    for pattern in time_patterns:
+        match = re.search(pattern, text)
+        if match:
+            if len(match.groups()) == 2 and match.group(2) in ['am', 'pm']:
+                return f"{match.group(1)} {match.group(2).upper()}"
+            elif len(match.groups()) == 3:
+                hour = match.group(1)
+                minute = match.group(2)
+                period = match.group(3).upper() if match.group(3) else "PM"
+                return f"{hour}:{minute} {period}"
+            else:
+                return match.group(0)
+    
+    return None
+
+# ================== DIALOGUE MANAGER ==================
+
+def generate_prompt(state_machine: SlotFillingStateMachine) -> str:
+    missing = state_machine.get_missing_slots()
+    
+    if not missing:
+        return None
+    
+    if len(missing) == 3:
+        return "Who would you like to meet with, and when?"
+    elif len(missing) == 2:
+        if "name" in missing and "date" in missing:
+            return "Who would you like to meet with, and on what date?"
+        elif "name" in missing and "time" in missing:
+            return "Who would you like to meet with, and at what time?"
+        else:
+            return "When? (date and time)"
+    else:
+        slot_prompts = {
+            "name": "Who would you like to meet with?",
+            "date": "What date?",
+            "time": "What time?"
+        }
+        return slot_prompts.get(missing[0])
+
+# ================== CHAT HANDLER ==================
+
+def chat(user_message, history, state_dict, request: gr.Request):
+    """Enhanced chat with intent classification + slot filling + delete + update support"""
+    if not user_message or not isinstance(user_message, str) or not user_message.strip():
+        return history, "", state_dict
+
+    user_id = request.session.get("user_id")
+
+    if not user_id:
+        history.append({"role": "assistant", "content": "🔐 Please login: [Login with Google](/login)"})
+        return history, "", state_dict
+
+    try:
+        state_machine = SlotFillingStateMachine.from_dict(state_dict)
+        
+        if state_machine.active:
+            print(f"📊 Continuing slot-filling. Current slots: {state_machine.slots}")
+            
+            name = extract_name_slot(user_message)
+            date = extract_date_slot(user_message)
+            time = extract_time_slot(user_message)
+            
+            if name and not state_machine.get_slot("name"):
+                state_machine.update_slot("name", name)
+            
+            if date and not state_machine.get_slot("date"):
+                state_machine.update_slot("date", date)
+            
+            if time and not state_machine.get_slot("time"):
+                state_machine.update_slot("time", time)
+            
+            new_state_dict = state_machine.to_dict()
+            
+            if state_machine.all_slots_filled():
+                result = create_calendar_event(
+                    user_id=user_id,
+                    name=state_machine.get_slot("name"),
+                    date_str=state_machine.get_slot("date"),
+                    time_str=state_machine.get_slot("time")
+                )
+                
+                state_machine.deactivate()
+                
+                assistant_reply = result["message"]
+                if result.get("link"):
+                    assistant_reply += f"\n🔗 [View Event]({result['link']})"
+                
+                history.append({"role": "user", "content": user_message})
+                history.append({"role": "assistant", "content": assistant_reply})
+                return history, "", {}
+            
+            prompt = generate_prompt(state_machine)
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": prompt})
+            return history, "", new_state_dict
+        
+        intent_data = classify_intent(user_message)
+        intent = intent_data.get("intent", "other")
+        
+        if intent == "greeting":
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": "Hi! I can help you schedule meetings, list events, cancel them, or reschedule them. What would you like to do?"})
+            return history, "", state_dict
+        
+        elif intent == "thanks":
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": "You're welcome! 😊"})
+            return history, "", {}
+        
+        elif intent == "list_events":
+            events_list = list_upcoming_events(user_id)
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": events_list})
+            return history, "", state_dict
+        
+        elif intent == "delete_event":
+            criteria = extract_delete_criteria(user_message)
+            
+            except_criteria = criteria.get("except", {})
+            if except_criteria.get("type") and except_criteria.get("value"):
+                except_dict = {"type": except_criteria["type"], "value": except_criteria["value"]}
+            else:
+                except_dict = None
+            
+            result = delete_event_by_criteria(
+                user_id=user_id,
+                criteria_type=criteria.get("type", "other"),
+                criteria_value=criteria.get("value"),
+                except_criteria=except_dict
+            )
+            
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": result})
+            return history, "", state_dict
+        
+        elif intent == "update_event":
+            criteria = extract_update_criteria(user_message)
+            
+            if criteria.get("action") and criteria.get("time_amount"):
+                result = update_event_time(
+                    user_id=user_id,
+                    criteria_type=criteria.get("criteria_type", "next"),
+                    criteria_value=criteria.get("criteria_value"),
+                    time_change_type=criteria.get("action"),
+                    time_amount=criteria.get("time_amount", 1)
+                )
+                
+                history.append({"role": "user", "content": user_message})
+                history.append({"role": "assistant", "content": result})
+                return history, "", state_dict
+            else:
+                history.append({"role": "user", "content": user_message})
+                history.append({"role": "assistant", "content": "❌ Could not understand the update request. Please specify which meeting to postpone/prepone and by how much time."})
+                return history, "", state_dict
+        
+        elif intent == "create_event":
+            state_machine.activate()
+            
+            name = extract_name_slot(user_message)
+            date = extract_date_slot(user_message)
+            time = extract_time_slot(user_message)
+            
+            if name:
+                state_machine.update_slot("name", name)
+            if date:
+                state_machine.update_slot("date", date)
+            if time:
+                state_machine.update_slot("time", time)
+            
+            new_state_dict = state_machine.to_dict()
+            
+            if state_machine.all_slots_filled():
+                result = create_calendar_event(
+                    user_id=user_id,
+                    name=state_machine.get_slot("name"),
+                    date_str=state_machine.get_slot("date"),
+                    time_str=state_machine.get_slot("time")
+                )
+                
+                assistant_reply = result["message"]
+                if result.get("link"):
+                    assistant_reply += f"\n🔗 [View Event]({result['link']})"
+                
+                history.append({"role": "user", "content": user_message})
+                history.append({"role": "assistant", "content": assistant_reply})
+                return history, "", {}
+            
+            prompt = generate_prompt(state_machine)
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": prompt})
+            return history, "", new_state_dict
+        
+        else:
+            history.append({"role": "user", "content": user_message})
+            history.append({"role": "assistant", "content": "I can help you:\n• 📅 Schedule meetings\n• 📋 List upcoming events\n• 🗑️ Cancel/delete events\n• ⏰ Postpone/prepone meetings\n\nWhat would you like to do?"})
+            return history, "", state_dict
+
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": f"❌ Error: {str(e)}"})
+        return history, "", {}
+
+
+def reset_conversation():
+    return [], "", {}
+
+
+def transcribe_audio(audio_path):
+    if not audio_path:
+        return ""
+    try:
+        with open(audio_path, "rb") as file:
+            transcription = groq_client.audio.transcriptions.create(
+                file=(audio_path, file.read()),
+                model="whisper-large-v3-turbo",
+                response_format="text"
+            )
+        return transcription
+    except Exception as e:
+        print(f"❌ Transcription error: {e}")
+        return ""
+
+# ================== GRADIO UI ==================
+
+custom_css = """
+.gradio-container {
+    max-width: 900px !important;
+    margin: auto !important;
+}
+.header-section {
+    text-align: center;
+    padding: 2rem 1rem 1rem 1rem;
+    background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+    border-radius: 16px;
+    margin-bottom: 2rem;
+    color: #ecf0f1;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+}
+.header-title {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+    color: #ecf0f1;
+}
+.header-subtitle {
+    font-size: 1.1rem;
+    opacity: 0.9;
+    color: #bdc3c7;
+}
+.auth-buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    margin-top: 1rem;
+}
+.auth-link {
+    padding: 0.5rem 1.5rem;
+    background: rgba(236, 240, 241, 0.15);
+    border-radius: 8px;
+    text-decoration: none;
+    color: #ecf0f1;
+    font-weight: 500;
+    transition: all 0.3s;
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(236, 240, 241, 0.2);
+}
+.auth-link:hover {
+    background: rgba(236, 240, 241, 0.25);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+.chat-container {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    border: 1px solid rgba(52, 73, 94, 0.1);
+}
+.input-row {
+    margin-top: 1rem;
+}
+.example-section {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: rgba(44, 62, 80, 0.05);
+    border-radius: 8px;
+    border: 1px solid rgba(44, 62, 80, 0.1);
+}
+"""
+
+with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft(), css=custom_css) as demo:
+    
+    gr.HTML("""
+        <div class="header-section">
+            <div class="header-title">🎙️ Voice Calendar Agent</div>
+            <div class="header-subtitle">Schedule, list, and cancel meetings with voice or text</div>
+            <div class="auth-buttons">
+                <a href="/login" class="auth-link">🔑 Login with Google</a>
+                <a href="/logout" class="auth-link">🚪 Logout</a>
+            </div>
+        </div>
+    """)
+
+    state = gr.State(value={})
+    
+    with gr.Column(elem_classes="chat-container"):
+        chatbot = gr.Chatbot(
+            height=500, 
+            show_label=False,
+            avatar_images=(None, "https://api.dicebear.com/7.x/bottts/svg?seed=calendar")
+        )
+    
+    with gr.Row(elem_classes="input-row"):
+        with gr.Column(scale=8):
+            msg = gr.Textbox(
+                placeholder="Type your message or use voice input...", 
+                show_label=False,
+                container=False
+            )
+        with gr.Column(scale=1, min_width=60):
+            voice_btn = gr.Audio(
+                sources=["microphone"], 
+                type="filepath", 
+                label="🎤", 
+                show_label=False,
+                container=False
+            )
+    
+    with gr.Row():
+        send = gr.Button("📤 Send", variant="primary", scale=2)
+        record_again = gr.Button("🎤 Record Again", variant="secondary", scale=1)
+        clear = gr.Button("🔄 Reset", variant="secondary", scale=1)
+
+    with gr.Accordion("📝 Example Commands", open=False, elem_classes="example-section"):
+        gr.Examples(
+            examples=[
+                "📋 List my upcoming meetings",
+                "📅 Schedule meeting with Bob on 16 December at 6 o'clock",
+                "⏰ Book event on Dec 25 at 2 PM",
+                "🗑️ Cancel all events except meeting with Aman",
+                "❌ Delete all meetings except today's",
+                "⏰ Postpone meeting with Bob by 2 hours",
+                "⏰ Prepone tomorrow's meeting by 1 hour",
+                "⏰ Delay next meeting by 30 minutes"
+            ],
+            inputs=msg,
+            label=None
+        )
+
+    send.click(chat, [msg, chatbot, state], [chatbot, msg, state])
+    msg.submit(chat, [msg, chatbot, state], [chatbot, msg, state])
+    clear.click(reset_conversation, None, [chatbot, msg, state])
+    voice_btn.change(transcribe_audio, voice_btn, msg)
+    record_again.click(lambda: None, None, voice_btn)
+
+app = gr.mount_gradio_app(app, demo, path="/")
+
+@app.on_event("startup")
+async def startup():
+    init_db()
+    print("✅ Calendar Agent with Full CRUD + Update Operations!")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 
