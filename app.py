@@ -1910,6 +1910,7 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft(), css=custom_
     
     with gr.Row():
         send = gr.Button("📤 Send", variant="primary", scale=2)
+        record_again = gr.Button("🎤 Record Again", variant="secondary", scale=1)
         clear = gr.Button("🔄 Reset", variant="secondary", scale=1)
 
     with gr.Accordion("📝 Example Commands", open=False, elem_classes="example-section"):
@@ -1930,6 +1931,7 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft(), css=custom_
     msg.submit(chat, [msg, chatbot, state], [chatbot, msg, state])
     clear.click(reset_conversation, None, [chatbot, msg, state])
     voice_btn.change(transcribe_audio, voice_btn, msg)
+    record_again.click(lambda: None, None, voice_btn)
 
 app = gr.mount_gradio_app(app, demo, path="/")
 
