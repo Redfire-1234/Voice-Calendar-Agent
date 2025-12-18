@@ -1342,6 +1342,12 @@ with gr.Blocks(title="Voice Calendar Agent", theme=gr.themes.Soft(), css=custom_
     voice_btn.change(transcribe_audio, voice_btn, msg)
     record_again.click(lambda: None, None, voice_btn)
 
+from fastapi.responses import FileResponse
+
+@app.get("/googlee16003a42fe50c79.html")
+def google_domain_verification():
+    return FileResponse("googlee16003a42fe50c79.html")
+
 app = gr.mount_gradio_app(app, demo, path="/")
 
 @app.on_event("startup")
