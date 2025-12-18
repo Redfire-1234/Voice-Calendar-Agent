@@ -43,7 +43,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email"
 ]
 
-REDIRECT_URI = os.getenv("REDIRECT_URI", "https://voice-calendar-agent.onrender.com/oauth2callback")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "https://amanansari.voicecalendaragent.work.gd/oauth2callback")
 
 # ================== FASTAPI ==================
 
